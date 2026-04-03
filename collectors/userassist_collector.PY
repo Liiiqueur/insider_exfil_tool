@@ -1,90 +1,154 @@
 """
-UserAssist Collector
-====================
-레지스트리에서 UserAssist 항목을 원시(raw) 형태로 수집한다.
+UserAssist Collector (오프라인 하이브 버전)
+==========================================
+라이브 레지스트리(winreg) 대신 마운트된 이미지의 NTUSER.DAT 파일을
+python-registry 로 직접 파싱한다.
 
-수집 경로:
-  HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist
+설치:
+    pip install python-registry
+
+수집 경로 (하이브 내부):
+  Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist
 
 대상 GUID (Windows 7/8/10/11):
   {CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}\\Count  → 실행파일 실행 기록
   {F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}\\Count  → 바로가기(.lnk) 실행 기록
 """
 
-import winreg
+import os
+import glob
 import logging
 from datetime import datetime
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ── 수집 대상 GUID ────────────────────────────────────────────────────────────
 USERASSIST_GUIDS = {
     "{CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}": "Executable",
     "{F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}": "Shortcut",
 }
 
-BASE_KEY = r"Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist"
+BASE_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist"
 
 
-def collect() -> list[dict]:
+# ── NTUSER.DAT 자동 탐색 ──────────────────────────────────────────────────────
+
+def find_ntuser_dat_files(mount_path: str) -> list[str]:
     """
-    UserAssist Count 키 하위의 모든 값을 수집한다.
+    마운트 경로에서 모든 사용자의 NTUSER.DAT 경로를 반환한다.
+
+    탐색 순서:
+      1. {mount_path}\\Users\\*\\NTUSER.DAT          (Windows Vista 이상)
+      2. {mount_path}\\Documents and Settings\\*\\NTUSER.DAT  (XP 이하)
+      3. {mount_path}\\NTUSER.DAT                    (루트 직접 지정 시)
+    """
+    # NTUSER.DAT 파일을 직접 넘긴 경우
+    if mount_path.lower().endswith("ntuser.dat") and os.path.isfile(mount_path):
+        return [mount_path]
+
+    found = []
+    patterns = [
+        os.path.join(mount_path, "Users", "*", "NTUSER.DAT"),
+        os.path.join(mount_path, "Documents and Settings", "*", "NTUSER.DAT"),
+        os.path.join(mount_path, "NTUSER.DAT"),
+    ]
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            if os.path.isfile(path):
+                found.append(path)
+
+    return found
+
+
+# ── 단일 하이브 수집 ──────────────────────────────────────────────────────────
+
+def _collect_from_hive(ntuser_path: str) -> list[dict]:
+    """단일 NTUSER.DAT 파일에서 UserAssist 항목을 수집한다."""
+    try:
+        from Registry import Registry
+    except ImportError:
+        raise ImportError(
+            "python-registry 가 설치되지 않았습니다.\n"
+            "  pip install python-registry"
+        )
+
+    results = []
+    collected_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+
+    try:
+        reg = Registry.Registry(ntuser_path)
+    except Exception as exc:
+        logger.error("하이브 열기 실패 [%s]: %s", ntuser_path, exc)
+        return results
+
+    # 사용자명: Users\<이름>\NTUSER.DAT 구조에서 추출
+    parts = ntuser_path.replace("\\", "/").split("/")
+    username = parts[-2] if len(parts) >= 2 else "unknown"
+
+    for guid, guid_type in USERASSIST_GUIDS.items():
+        key_path = f"{BASE_KEY}\\{guid}\\Count"
+        try:
+            count_key = reg.open(key_path)
+        except Registry.RegistryKeyNotFoundException:
+            logger.warning("[%s] 키 없음: %s", username, key_path)
+            continue
+        except Exception as exc:
+            logger.error("[%s] 키 열기 실패: %s", username, exc)
+            continue
+
+        for value in count_key.values():
+            if value.value_type() == Registry.RegBin:
+                raw_data = value.raw_data()
+                if isinstance(raw_data, bytes):
+                    results.append({
+                        "guid":         guid,
+                        "guid_type":    guid_type,
+                        "name_rot13":   value.name(),
+                        "raw_data":     raw_data,
+                        "username":     username,
+                        "hive_path":    ntuser_path,
+                        "collected_at": collected_at,
+                    })
+
+    logger.info("[%s] UserAssist %d건 수집", username, len(results))
+    return results
+
+
+# ── 공개 인터페이스 ───────────────────────────────────────────────────────────
+
+def collect(mount_path: str) -> list[dict]:
+    """
+    마운트 경로 안의 모든 사용자 NTUSER.DAT 에서 UserAssist 를 수집한다.
+
+    Parameters
+    ----------
+    mount_path : str
+        마운트된 드라이브 루트 (예: "E:\\") 또는 NTUSER.DAT 직접 경로
 
     Returns
     -------
     list[dict]
-        각 항목은 다음 필드를 포함한다.
+        수집된 raw 항목 목록. 각 항목:
         {
-            "guid"       : str   – 원본 GUID 문자열
-            "guid_type"  : str   – "Executable" | "Shortcut"
-            "name_rot13" : str   – ROT13 인코딩된 원본 값 이름
-            "raw_data"   : bytes – 레지스트리 BINARY 값 (파싱은 parser 에서 수행)
-            "collected_at": str  – ISO 8601 수집 시각
+            "guid"        : str
+            "guid_type"   : str    – "Executable" | "Shortcut"
+            "name_rot13"  : str    – ROT13 인코딩된 원본 값 이름
+            "raw_data"    : bytes  – REG_BINARY 원시 데이터
+            "username"    : str    – NTUSER.DAT 소유 사용자명
+            "hive_path"   : str    – 원본 하이브 파일 경로
+            "collected_at": str    – ISO 8601 수집 시각
         }
     """
-    results: list[dict] = []
-    collected_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    hive_files = find_ntuser_dat_files(mount_path)
 
-    for guid, guid_type in USERASSIST_GUIDS.items():
-        count_key_path = f"{BASE_KEY}\\{guid}\\Count"
-        try:
-            hkey = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                count_key_path,
-                access=winreg.KEY_READ,
-            )
-        except FileNotFoundError:
-            logger.warning("키를 찾을 수 없음: %s", count_key_path)
-            continue
-        except PermissionError:
-            logger.error("접근 권한 없음: %s", count_key_path)
-            continue
-        except Exception as exc:
-            logger.exception("키 열기 실패 [%s]: %s", count_key_path, exc)
-            continue
+    if not hive_files:
+        logger.warning("NTUSER.DAT 파일을 찾지 못했습니다: %s", mount_path)
+        return []
 
-        with hkey:
-            idx = 0
-            while True:
-                try:
-                    value_name, value_data, value_type = winreg.EnumValue(hkey, idx)
-                except OSError:
-                    # 더 이상 값이 없으면 루프 종료
-                    break
+    logger.info("NTUSER.DAT 발견: %d개 → %s", len(hive_files), hive_files)
 
-                # REG_BINARY 타입만 의미 있는 구조체 데이터를 가진다.
-                if value_type == winreg.REG_BINARY and isinstance(value_data, bytes):
-                    results.append(
-                        {
-                            "guid": guid,
-                            "guid_type": guid_type,
-                            "name_rot13": value_name,
-                            "raw_data": value_data,
-                            "collected_at": collected_at,
-                        }
-                    )
-                idx += 1
+    all_results = []
+    for hive_path in hive_files:
+        all_results.extend(_collect_from_hive(hive_path))
 
-    logger.info("UserAssist 수집 완료 – 총 %d 개 항목", len(results))
-    return results
+    logger.info("전체 UserAssist 수집 완료 – %d건", len(all_results))
+    return all_results
