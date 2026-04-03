@@ -285,8 +285,7 @@ class MainWindow(QMainWindow):
     def _open_image(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "이미지 파일 선택", "",
-            # E01 제거, dd / raw / img 만 허용
-            "Forensic Images (*.dd *.raw *.img);;All Files (*)"
+            "Forensic Images (*.dd *.raw *.img *.001);;All Files (*)"
         )
         if not path:
             return
