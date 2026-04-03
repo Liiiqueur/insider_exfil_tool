@@ -29,16 +29,16 @@ from parsers import userassist_parser
 
 logger = logging.getLogger(__name__)
 
-C_BG      = "#1e1e2e"
-C_PANEL   = "#252535"
-C_BORDER  = "#3a3a5c"
-C_AMBER   = "#ffb347"
-C_BLUE    = "#569cd6"
-C_GREEN   = "#4ec994"
-C_TEXT    = "#cdd6f4"
-C_SUBTEXT = "#888aaa"
-C_SELECT  = "#313155"
-C_HEADER  = "#2a2a42"
+C_BG      = "#ffffff" 
+C_PANEL   = "#f5f7fa" 
+C_BORDER  = "#e1e5ea" 
+C_HEADER  = "#eef2f7"   
+C_TEXT    = "#1f2933"   
+C_SUBTEXT = "#6b7280"   
+C_SELECT  = "#e6f0ff"  
+C_BLUE    = "#2563eb"   
+C_AMBER   = "#f59e0b"   
+C_GREEN   = "#10b981" 
 
 
 # ── 워커 ─────────────────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Forensic Analysis Tool")
+        self.setWindowTitle("Insider Exfilation Tool")
         self.setGeometry(100, 100, 1400, 860)
         self.setMinimumSize(1000, 600)
 
