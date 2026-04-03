@@ -1,19 +1,3 @@
-"""
-UserAssist Parser
-=================
-collector 가 수집한 raw 항목을 파싱해 사람이 읽을 수 있는 형태로 변환한다.
-
-Binary 구조 (Count 값, 72 bytes):
-  Offset 0x00–0x03  ( 4 bytes) : 세션 번호      (uint32 LE)
-  Offset 0x04–0x07  ( 4 bytes) : 실행 횟수      (uint32 LE)
-  Offset 0x08–0x3B  (52 bytes) : 알 수 없는 데이터 (focus time 등)
-  Offset 0x3C–0x43  ( 8 bytes) : 마지막 실행 시간 (FILETIME, uint64 LE)
-
-ROT13:
-  값 이름(key name)은 ROT13으로 인코딩되어 있다. 알파벳만 13칸 이동하고
-  숫자·기호·한글 등 비알파벳 문자는 그대로 유지한다.
-"""
-
 import struct
 import codecs
 import logging

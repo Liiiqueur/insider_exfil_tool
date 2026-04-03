@@ -1,20 +1,3 @@
-"""
-UserAssist Collector (오프라인 하이브 버전)
-==========================================
-라이브 레지스트리(winreg) 대신 마운트된 이미지의 NTUSER.DAT 파일을
-python-registry 로 직접 파싱한다.
-
-설치:
-    pip install python-registry
-
-수집 경로 (하이브 내부):
-  Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist
-
-대상 GUID (Windows 7/8/10/11):
-  {CEBFF5CD-ACE2-4F4F-9178-9926F41749EA}\\Count  → 실행파일 실행 기록
-  {F4E57C4B-2036-45F0-A9AB-443BCFE33D9F}\\Count  → 바로가기(.lnk) 실행 기록
-"""
-
 import os
 import glob
 import logging
