@@ -127,11 +127,12 @@ def collect(mount_path: str) -> list[dict]:
         logger.warning("NTUSER.DAT 파일을 찾지 못했습니다: %s", mount_path)
         return []
 
-    logger.info("NTUSER.DAT 발견: %d개 → %s", len(hive_files), hive_files)
+    logger.info("NTUSER.DAT 발견: %d개", len(hive_files))
 
     all_results = []
     for hive_path in hive_files:
-        all_results.extend(_collect_from_hive(hive_path))
+        results = _collect_from_hive(hive_path)
+        all_results.extend(results)
 
     logger.info("전체 UserAssist 수집 완료 – %d건", len(all_results))
     return all_results

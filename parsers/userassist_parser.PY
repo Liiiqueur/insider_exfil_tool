@@ -6,6 +6,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
 # Windows FILETIME epoch: 1601-01-01 00:00:00 UTC
 _FILETIME_EPOCH_DELTA = 116_444_736_000_000_000  # 100-nanosecond intervals
 _STRUCT_MIN_LEN = 0x44  # 최소 68 bytes 필요 (0x43까지 읽으려면 0x44 바이트)
