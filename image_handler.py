@@ -1,6 +1,7 @@
 import os
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,20 @@ class FsEntry:
     is_dir: bool
     size:   int    = 0
     inode:  int    = 0
+    created_time:  object = None
+    modified_time: object = None
+    accessed_time: object = None
+    changed_time:  object = None
     _fs:    object = field(default=None, repr=False)
+
+
+def _safe_unix_ts(timestamp):
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except Exception:
+        return None
 
 
 class ImageHandler:
@@ -125,16 +139,29 @@ class ImageHandler:
             is_dir  = f.info.meta.type == pytsk3.TSK_FS_META_TYPE_DIR
             ch_path = f"{path.rstrip('/')}/{name}"
             entries.append(FsEntry(
-                name=name, path=ch_path, is_dir=is_dir,
-                size=f.info.meta.size, inode=f.info.meta.addr, _fs=fs,
+                name=name,
+                path=ch_path,
+                is_dir=is_dir,
+                size=f.info.meta.size,
+                inode=f.info.meta.addr,
+                created_time=_safe_unix_ts(getattr(f.info.meta, "crtime", 0)),
+                modified_time=_safe_unix_ts(getattr(f.info.meta, "mtime", 0)),
+                accessed_time=_safe_unix_ts(getattr(f.info.meta, "atime", 0)),
+                changed_time=_safe_unix_ts(getattr(f.info.meta, "ctime", 0)),
+                _fs=fs,
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
     def read_file(self, fs, inode: int, max_bytes: int = 1024 * 1024) -> bytes:
         try:
-            f    = fs.open_meta(inode=inode)
-            size = min(f.info.meta.size, max_bytes)
+            f = fs.open_meta(inode=inode)
+            meta = getattr(f.info, "meta", None)
+            if meta is None:
+                return b""
+            size = min(getattr(meta, "size", 0), max_bytes)
+            if size <= 0:
+                return b""
             return f.read_random(0, size)
         except Exception as e:
             logger.warning("파일 읽기 실패 inode=%d: %s", inode, e)
