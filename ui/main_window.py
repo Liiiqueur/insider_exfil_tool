@@ -1,37 +1,19 @@
 import os
-import sys
-import json
 import tempfile
 import logging
 from datetime import datetime, timezone
 
-from PyQt5.QtCore import Qt, QThread, QSize, pyqtSignal
-from PyQt5.QtGui import QColor, QFont
 from PyQt5.QtWidgets import (
-    QAbstractItemView,
-    QAction,
-    QFileDialog,
-    QFrame,
-    QHeaderView,
-    QHBoxLayout,
-    QLabel,
-    QListWidget,
-    QListWidgetItem,
-    QMainWindow,
-    QPushButton,
-    QSplitter,
-    QStatusBar,
-    QTabWidget,
-    QTableWidget,
-    QTableWidgetItem,
-    QTextEdit,
-    QToolBar,
-    QTreeWidget,
-    QTreeWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
+    QTextEdit, QLabel, QFileDialog, QTreeWidget, QTreeWidgetItem,
+    QTableWidget, QTableWidgetItem, QTabWidget, QToolBar, QAction,
+    QHeaderView, QStatusBar, QAbstractItemView, QListWidget,
+    QListWidgetItem, QPushButton, QFrame,
 )
+from PyQt5.QtGui import QFont, QColor
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QSize
 
+import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from image_handler import ImageHandler
@@ -39,231 +21,192 @@ from collectors import userassist_collector
 from parsers import userassist_parser
 from collectors import jumplist_collector
 from parsers import jumplist_parser
-from collectors import prefetch_collector
-from parsers import prefetch_parser
-from collectors import outlook_store_collector
-from parsers import outlook_store_parser
-from collectors import printer_spool_collector
-from parsers import printer_spool_parser
-from collectors import amcache_collector
-from parsers import amcache_parser
-from collectors import shellbags_collector
-from parsers import shellbags_parser
-from collectors import mounteddevices_collector
-from parsers import mounteddevices_parser
-from collectors import usb_registry_collector
-from parsers import usb_registry_parser
-from collectors.artifact_utils import cleanup_temp_paths
-from parsers.artifact_weights import attach_artifact_weight, get_artifact_weight
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_PATH = os.path.join(os.path.dirname(__file__), "..", ".ui_settings.json")
-
-C_BG = "#f5f7fa"
-C_PANEL = "#ffffff"
-C_BORDER = "#e1e5ea"
-C_HEADER = "#eef2f7"
-C_TEXT = "#1f2933"
+# ── 색상 팔레트 ───────────────────────────────────────────────────────────────
+C_BG      = "#f5f7fa"
+C_PANEL   = "#ffffff"
+C_BORDER  = "#e1e5ea"
+C_HEADER  = "#eef2f7"
+C_TEXT    = "#1f2933"
 C_SUBTEXT = "#6b7280"
-C_SELECT = "#e6f0ff"
-C_BLUE = "#2563eb"
-C_AMBER = "#f59e0b"
-C_GREEN = "#059669"
-C_RED = "#dc2626"
-C_PURPLE = "#7c3aed"
+C_SELECT  = "#e6f0ff"
+C_BLUE    = "#2563eb"
+C_AMBER   = "#f59e0b"
+C_GREEN   = "#059669"
+C_RED     = "#dc2626"
+C_PURPLE  = "#7c3aed"
 
+
+# ── 아티팩트 정의 레지스트리 ──────────────────────────────────────────────────
+# 새 아티팩트 추가 시 이 목록에 항목만 추가하면 됨
 ARTIFACT_REGISTRY = [
-    {"id": "userassist", "label": "UserAssist", "description": "NTUSER.DAT UserAssist 실행 흔적", "color": C_BLUE},
-    {"id": "jumplist", "label": "Jumplist", "description": "최근 사용 파일/프로그램 목록", "color": C_PURPLE},
-    {"id": "prefetch", "label": "Prefetch", "description": "프로그램 실행 캐시", "color": C_GREEN},
-    {"id": "amcache", "label": "Amcache", "description": "응용 프로그램 인벤토리/실행 흔적", "color": C_AMBER},
-    {"id": "shellbags", "label": "Shellbags", "description": "탐색기 폴더 열람 흔적", "color": C_BLUE},
-    {"id": "mounteddevices", "label": "MountedDevices", "description": "드라이브 문자/볼륨 매핑 정보", "color": C_PURPLE},
-    {"id": "usb_registry", "label": "USB Registry", "description": "USBSTOR / Enum\\USB 장치 흔적", "color": C_RED},
-    {"id": "outlook_store", "label": "Outlook OST/PST", "description": "Outlook 메일 저장소 파일", "color": C_GREEN},
-    {"id": "printer_spool", "label": "Printer Spool", "description": "프린터 스풀 로그/작업 파일", "color": C_AMBER},
+    {
+        "id":          "userassist",
+        "label":       "UserAssist",
+        "icon":        "⚙",
+        "description": "사용자가 실행한 프로그램 기록\n(NTUSER.DAT → UserAssist 레지스트리)",
+        "color":       C_BLUE,
+    },
+    {
+        "id":          "jumplist",
+        "label":       "Jumplist",
+        "icon":        "🔗",
+        "description": "최근·자주 사용한 파일/프로그램 목록\n(AutomaticDestinations / CustomDestinations)",
+        "color":       C_PURPLE,
+    },
+    # 추후 추가 예시:
+    # {"id": "shellbags",   "label": "Shellbags",      "icon": "🗂", ...},
+    # {"id": "prefetch",    "label": "Prefetch",        "icon": "📋", ...},
+    # {"id": "eventlog",    "label": "Event Log",       "icon": "📋", ...},
+    # {"id": "browserhistory", "label": "Browser History", "icon": "🌐", ...},
 ]
-ARTIFACT_INDEX = {item["id"]: item for item in ARTIFACT_REGISTRY}
-
-# NOTE: Re-declare the artifact registry with ASCII-safe descriptions for stable UI text.
-ARTIFACT_REGISTRY = [
-    {"id": "userassist", "label": "UserAssist", "description": "NTUSER.DAT UserAssist execution evidence", "color": C_BLUE},
-    {"id": "jumplist", "label": "Jumplist", "description": "Recent file and application history", "color": C_PURPLE},
-    {"id": "prefetch", "label": "Prefetch", "description": "Program execution cache", "color": C_GREEN},
-    {"id": "amcache", "label": "Amcache", "description": "Application inventory and execution traces", "color": C_AMBER},
-    {"id": "shellbags", "label": "Shellbags", "description": "Explorer folder access traces", "color": C_BLUE},
-    {"id": "mounteddevices", "label": "MountedDevices", "description": "Drive letter and volume mapping data", "color": C_PURPLE},
-    {"id": "usb_registry", "label": "USB Registry", "description": "USBSTOR and Enum\\USB device traces", "color": C_RED},
-    {"id": "outlook_store", "label": "Outlook OST/PST", "description": "Outlook mailbox store files", "color": C_GREEN},
-    {"id": "printer_spool", "label": "Printer Spool", "description": "Printer spool job files", "color": C_AMBER},
-]
-ARTIFACT_INDEX = {item["id"]: item for item in ARTIFACT_REGISTRY}
 
 
-def _cleanup_entries(entries: list[dict]) -> None:
-    cleanup_temp_paths(entries)
-
-
-def _run_userassist(handler: ImageHandler, log_cb) -> list[dict]:
-    all_entries = []
-    for vol in handler.volumes:
-        fs = vol["fs"]
-        log_cb(f"[INFO] [{vol['desc']}] scanning NTUSER.DAT")
-        for hive in handler.find_ntuser_dat(fs):
-            raw_data = handler.read_file(fs, hive["inode"], 50 * 1024 * 1024)
-            if not raw_data:
-                continue
-            with tempfile.NamedTemporaryFile(suffix="_NTUSER.DAT", delete=False) as tmp:
-                tmp.write(raw_data)
-                tmp_path = tmp.name
-            try:
-                raw = userassist_collector.collect(tmp_path)
-                parsed = userassist_parser.parse(raw)
-                all_entries.extend(attach_artifact_weight(entry, "userassist") for entry in parsed)
-            finally:
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-    return all_entries
-
-
-def _run_jumplist(handler: ImageHandler, log_cb) -> list[dict]:
-    collected = []
-    for vol in handler.volumes:
-        fs = vol["fs"]
-        log_cb(f"[INFO] [{vol['desc']}] scanning Jumplist")
-        collected.extend(jumplist_collector.collect_from_image(handler, fs))
-    try:
-        parsed = jumplist_parser.parse(collected)
-        return [attach_artifact_weight(entry, "jumplist") for entry in parsed]
-    finally:
-        _cleanup_entries(collected)
-
-
-def _run_module(handler: ImageHandler, log_cb, collector_module, parser_module) -> list[dict]:
-    collected = []
-    for vol in handler.volumes:
-        fs = vol["fs"]
-        log_cb(f"[INFO] [{vol['desc']}] collecting {collector_module.__name__.split('.')[-1]}")
-        collected.extend(collector_module.collect_from_image(handler, fs))
-    try:
-        return parser_module.parse(collected)
-    finally:
-        _cleanup_entries(collected)
-
-
-ARTIFACT_RUNNERS = {
-    "userassist": lambda handler, log_cb: _run_userassist(handler, log_cb),
-    "jumplist": lambda handler, log_cb: _run_jumplist(handler, log_cb),
-    "prefetch": lambda handler, log_cb: _run_module(handler, log_cb, prefetch_collector, prefetch_parser),
-    "outlook_store": lambda handler, log_cb: _run_module(handler, log_cb, outlook_store_collector, outlook_store_parser),
-    "printer_spool": lambda handler, log_cb: _run_module(handler, log_cb, printer_spool_collector, printer_spool_parser),
-    "amcache": lambda handler, log_cb: _run_module(handler, log_cb, amcache_collector, amcache_parser),
-    "shellbags": lambda handler, log_cb: _run_module(handler, log_cb, shellbags_collector, shellbags_parser),
-    "mounteddevices": lambda handler, log_cb: _run_module(handler, log_cb, mounteddevices_collector, mounteddevices_parser),
-    "usb_registry": lambda handler, log_cb: _run_module(handler, log_cb, usb_registry_collector, usb_registry_parser),
-}
-
+# ── 백그라운드 워커 ───────────────────────────────────────────────────────────
 
 class LoadImageWorker(QThread):
-    done = pyqtSignal(object)
+    done    = pyqtSignal(object)
     log_msg = pyqtSignal(str)
-    error = pyqtSignal(str)
+    error   = pyqtSignal(str)
 
-    def __init__(self, path: str):
+    def __init__(self, path):
         super().__init__()
         self.path = path
 
     def run(self):
         try:
-            self.log_msg.emit(f"[INFO] opening image: {self.path}")
+            self.log_msg.emit(f"[INFO] 이미지 열기: {self.path}")
             handler = ImageHandler()
             handler.open(self.path)
             if not handler.volumes:
-                self.error.emit("[ERROR] no readable volume found")
+                self.error.emit("[ERROR] 볼륨을 찾지 못했습니다. 이미지 포맷을 확인하세요.")
                 return
+            self.log_msg.emit(f"[INFO] 볼륨 {len(handler.volumes)}개 발견")
             self.done.emit(handler)
-        except Exception as exc:
-            self.error.emit(f"[ERROR] image open failed: {exc}")
+        except Exception as e:
+            self.error.emit(f"[ERROR] 이미지 열기 실패: {e}")
 
 
 class ListDirWorker(QThread):
-    done = pyqtSignal(list, object)
-    error = pyqtSignal(str)
+    done    = pyqtSignal(list, object)
+    log_msg = pyqtSignal(str)
+    error   = pyqtSignal(str)
 
     def __init__(self, handler, fs, inode, path, tree_item):
         super().__init__()
-        self.handler = handler
-        self.fs = fs
-        self.inode = inode
-        self.path = path
+        self.handler, self.fs = handler, fs
+        self.inode, self.path = inode, path
         self.tree_item = tree_item
 
     def run(self):
         try:
             entries = self.handler.list_directory(self.fs, self.inode, self.path)
             self.done.emit(entries, self.tree_item)
-        except Exception as exc:
-            self.error.emit(f"[ERROR] directory read failed: {exc}")
+        except Exception as e:
+            self.error.emit(f"[ERROR] 디렉터리 읽기 실패: {e}")
 
 
 class ArtifactWorker(QThread):
-    done = pyqtSignal(str, list)
+    """단일 아티팩트 ID를 받아 해당 수집·파싱만 수행."""
+    done    = pyqtSignal(str, list)   # (artifact_id, entries)
     log_msg = pyqtSignal(str)
-    error = pyqtSignal(str)
+    error   = pyqtSignal(str)
 
     def __init__(self, artifact_id: str, handler: ImageHandler):
         super().__init__()
         self.artifact_id = artifact_id
-        self.handler = handler
+        self.handler     = handler
 
     def run(self):
-        runner = ARTIFACT_RUNNERS.get(self.artifact_id)
-        if not runner:
-            self.error.emit(f"[ERROR] unsupported artifact: {self.artifact_id}")
-            return
+        aid = self.artifact_id
         try:
-            entries = runner(self.handler, self.log_msg.emit)
-            self.log_msg.emit(f"[INFO] {self.artifact_id} parsed: {len(entries)} entries")
-            self.done.emit(self.artifact_id, entries)
-        except Exception as exc:
-            self.error.emit(f"[ERROR] {self.artifact_id} parse failed: {exc}")
+            if aid == "userassist":
+                entries = self._run_userassist()
+            elif aid == "jumplist":
+                entries = self._run_jumplist()
+            else:
+                self.error.emit(f"[ERROR] 알 수 없는 아티팩트: {aid}")
+                return
+            self.log_msg.emit(f"[INFO] {aid} 파싱 완료 – {len(entries)}건")
+            self.done.emit(aid, entries)
+        except Exception as e:
+            self.error.emit(f"[ERROR] {aid} 수집 실패: {e}")
 
+    def _run_userassist(self) -> list:
+        all_entries = []
+        for vol in self.handler.volumes:
+            fs = vol["fs"]
+            self.log_msg.emit(f"[INFO] [{vol['desc']}] NTUSER.DAT 탐색...")
+            for hive in self.handler.find_ntuser_dat(fs):
+                self.log_msg.emit(f"[INFO] 하이브: {hive['path']}")
+                raw_data = self.handler.read_file(fs, hive["inode"], 50 * 1024 * 1024)
+                if not raw_data:
+                    continue
+                with tempfile.NamedTemporaryFile(suffix="_NTUSER.DAT", delete=False) as tmp:
+                    tmp.write(raw_data)
+                    tmp_path = tmp.name
+                try:
+                    raw = userassist_collector.collect(tmp_path)
+                    all_entries.extend(userassist_parser.parse(raw))
+                finally:
+                    os.unlink(tmp_path)
+        return all_entries
+
+    def _run_jumplist(self) -> list:
+        all_collected = []
+        for vol in self.handler.volumes:
+            fs = vol["fs"]
+            self.log_msg.emit(f"[INFO] [{vol['desc']}] Jumplist 탐색...")
+            collected = jumplist_collector.collect_from_image(self.handler, fs)
+            all_collected.extend(collected)
+        self.log_msg.emit(f"[INFO] Jumplist 파일 {len(all_collected)}개 수집")
+        entries = jumplist_parser.parse(all_collected)
+        # 임시 파일 정리
+        for info in all_collected:
+            try:
+                if os.path.exists(info["tmp_path"]):
+                    os.unlink(info["tmp_path"])
+            except Exception:
+                pass
+        return entries
+
+
+# ── 메인 윈도우 ───────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
+
     def __init__(self):
         super().__init__()
-        # NOTE: Status bar controls the global UI scale from a 10pt base size.
-        self._base_font_pt = 10
-        self._font_scale_percent = self._load_font_scale_percent()
         self.setWindowTitle("Insider Exfiltration Tool")
         self.setGeometry(100, 100, 1500, 900)
         self.setMinimumSize(1100, 650)
 
-        self._handler = None
-        self._workers = []
-        self._item_meta = {}
-        self._table_entries = []
-        self._table_fs = None
-        self._artifact_cache = {}
-        self._current_aid = None
+        self._handler        = None
+        self._workers        = []
+        self._item_meta      = {}
+        self._table_entries  = []
+        self._table_fs       = None
+        self._artifact_cache = {}   # {artifact_id: entries}
+        self._current_aid    = None
 
         self._init_ui()
-        self._apply_dynamic_fonts()
         self._apply_style()
 
+    # ── UI 구성 ───────────────────────────────────────────────────────────────
+
     def _init_ui(self):
+        # ── 툴바
         toolbar = QToolBar()
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(16, 16))
         self.addToolBar(toolbar)
 
-        act_open = QAction("Open Image", self)
+        act_open = QAction("📂  이미지 열기", self)
         act_open.triggered.connect(self._open_image)
 
-        self.act_export = QAction("Export Result", self)
+        self.act_export = QAction("💾  결과 내보내기", self)
         self.act_export.setEnabled(False)
         self.act_export.triggered.connect(self._export_results)
 
@@ -271,27 +214,37 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.act_export)
 
+        # ── 패널 1: Evidence Tree (좌)
+        left_panel = self._make_evidence_tree()
+
+        # ── 패널 2: 파일 브라우저 + Hex/Text 뷰어 (중)
+        mid_panel = self._make_file_browser()
+
+        # ── 패널 3: 아티팩트 (우)
+        right_panel = self._make_artifact_panel()
+
+        # ── 3단 스플리터
         main_split = QSplitter(Qt.Horizontal)
-        main_split.addWidget(self._make_evidence_tree())
-        main_split.addWidget(self._make_file_browser())
-        main_split.addWidget(self._make_artifact_panel())
+        main_split.addWidget(left_panel)
+        main_split.addWidget(mid_panel)
+        main_split.addWidget(right_panel)
         main_split.setSizes([250, 700, 500])
         main_split.setStretchFactor(1, 2)
 
+        # ── 로그
         log_panel = QWidget()
-        log_layout = QVBoxLayout(log_panel)
-        log_layout.setContentsMargins(4, 0, 4, 2)
-        log_layout.setSpacing(0)
-        log_label = QLabel("  Log")
-        log_label.setFixedHeight(20)
-        log_label.setObjectName("log_header")
-        log_layout.addWidget(log_label)
-
+        logv = QVBoxLayout(log_panel)
+        logv.setContentsMargins(4, 0, 4, 2)
+        logv.setSpacing(0)
+        log_lbl = QLabel("  로그")
+        log_lbl.setFixedHeight(20)
+        log_lbl.setObjectName("log_header")
+        logv.addWidget(log_lbl)
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setFixedHeight(110)
-        self.log_output.setFont(QFont("Consolas", self._scaled_pt(9)))
-        log_layout.addWidget(self.log_output)
+        self.log_output.setFont(QFont("Consolas", 9))
+        logv.addWidget(self.log_output)
 
         root = QVBoxLayout()
         root.setContentsMargins(4, 4, 4, 4)
@@ -305,61 +258,40 @@ class MainWindow(QMainWindow):
 
         self.status = QStatusBar()
         self.setStatusBar(self.status)
-        # NOTE: Keep font size control visible in the bottom-right corner.
-        # NOTE: Use explicit down/up buttons so the scale control reads as ▼ 100% ▲.
-        self.font_down_btn = QPushButton("▼")
-        self.font_down_btn.setObjectName("font_scale_btn")
-        self.font_down_btn.setFixedWidth(28)
-        self.font_down_btn.setFlat(True)
-        self.font_down_btn.setText("\u25BC")
-        self.font_down_btn.clicked.connect(lambda: self._change_font_scale(-10))
-        self.status.addPermanentWidget(self.font_down_btn)
-
-        self.font_scale_label = QLabel()
-        self.font_scale_label.setObjectName("font_scale_label")
-        self.status.addPermanentWidget(self.font_scale_label)
-
-        self.font_up_btn = QPushButton("▲")
-        self.font_up_btn.setObjectName("font_scale_btn")
-        self.font_up_btn.setFixedWidth(28)
-        self.font_up_btn.setFlat(True)
-        self.font_up_btn.setText("\u25B2")
-        self.font_up_btn.clicked.connect(lambda: self._change_font_scale(10))
-        self.status.addPermanentWidget(self.font_up_btn)
-        self.status.showMessage("Open a forensic image to start.")
+        self.status.showMessage("이미지를 열어 분석을 시작하세요.")
 
     def _make_evidence_tree(self) -> QWidget:
         panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        lv = QVBoxLayout(panel)
+        lv.setContentsMargins(0, 0, 0, 0)
+        lv.setSpacing(0)
 
-        label = QLabel("  Evidence Tree")
-        label.setFixedHeight(28)
-        label.setObjectName("panel_header")
-        layout.addWidget(label)
+        lbl = QLabel("  Evidence Tree")
+        lbl.setFixedHeight(28)
+        lbl.setObjectName("panel_header")
+        lv.addWidget(lbl)
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
         self.tree.itemExpanded.connect(self._on_tree_expanded)
         self.tree.itemClicked.connect(self._on_tree_clicked)
-        layout.addWidget(self.tree)
+        lv.addWidget(self.tree)
         return panel
 
     def _make_file_browser(self) -> QWidget:
+        # 파일 목록
         file_panel = QWidget()
-        file_layout = QVBoxLayout(file_panel)
-        file_layout.setContentsMargins(0, 0, 0, 0)
-        file_layout.setSpacing(0)
-
-        label = QLabel("  File Browser")
-        label.setFixedHeight(28)
-        label.setObjectName("panel_header")
-        file_layout.addWidget(label)
+        fv = QVBoxLayout(file_panel)
+        fv.setContentsMargins(0, 0, 0, 0)
+        fv.setSpacing(0)
+        flbl = QLabel("  파일 목록")
+        flbl.setFixedHeight(28)
+        flbl.setObjectName("panel_header")
+        fv.addWidget(flbl)
 
         self.file_table = QTableWidget()
         self.file_table.setColumnCount(4)
-        self.file_table.setHorizontalHeaderLabels(["Name", "Size", "Type", "Inode"])
+        self.file_table.setHorizontalHeaderLabels(["이름", "크기", "유형", "Inode"])
         self.file_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.file_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
@@ -367,103 +299,115 @@ class MainWindow(QMainWindow):
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.file_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.file_table.verticalHeader().setVisible(False)
+        self.file_table.setShowGrid(True)
         self.file_table.itemClicked.connect(self._on_file_clicked)
-        file_layout.addWidget(self.file_table)
+        fv.addWidget(self.file_table)
+
+        # Hex / Text 뷰어 탭
+        viewer_tabs = QTabWidget()
+        viewer_tabs.setObjectName("viewer_tabs")
 
         self.hex_view = QTextEdit()
         self.hex_view.setReadOnly(True)
-        self.hex_view.setFont(QFont("Consolas", self._scaled_pt(10)))
+        self.hex_view.setFont(QFont("Consolas", 10))
 
         self.text_view = QTextEdit()
         self.text_view.setReadOnly(True)
-        self.text_view.setFont(QFont("Consolas", self._scaled_pt(10)))
+        self.text_view.setFont(QFont("Consolas", 10))
 
-        self.meta_view = QTextEdit()
-        self.meta_view.setReadOnly(True)
-        self.meta_view.setFont(QFont("Consolas", self._scaled_pt(10)))
-
-        viewer_tabs = QTabWidget()
-        viewer_tabs.setObjectName("viewer_tabs")
         viewer_tabs.addTab(self.hex_view, "Hex")
         viewer_tabs.addTab(self.text_view, "Text")
-        viewer_tabs.addTab(self.meta_view, "Metadata")
 
-        split = QSplitter(Qt.Vertical)
-        split.addWidget(file_panel)
-        split.addWidget(viewer_tabs)
-        split.setSizes([400, 260])
-        return split
+        mid_split = QSplitter(Qt.Vertical)
+        mid_split.addWidget(file_panel)
+        mid_split.addWidget(viewer_tabs)
+        mid_split.setSizes([400, 260])
+        return mid_split
 
     def _make_artifact_panel(self) -> QWidget:
+        """
+        우측 아티팩트 패널.
+        상단: 아티팩트 목록 (QListWidget)
+        하단: 선택된 아티팩트 결과 (QTextEdit)
+        """
         panel = QWidget()
-        layout = QVBoxLayout(panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        pv = QVBoxLayout(panel)
+        pv.setContentsMargins(0, 0, 0, 0)
+        pv.setSpacing(0)
 
-        label = QLabel("  Artifacts")
-        label.setFixedHeight(28)
-        label.setObjectName("panel_header")
-        layout.addWidget(label)
+        # ── 헤더
+        lbl = QLabel("  아티팩트")
+        lbl.setFixedHeight(28)
+        lbl.setObjectName("panel_header")
+        pv.addWidget(lbl)
 
+        # ── 아티팩트 목록
         self.artifact_list = QListWidget()
         self.artifact_list.setFixedHeight(len(ARTIFACT_REGISTRY) * 52 + 8)
         self.artifact_list.setSpacing(2)
-        for artifact in ARTIFACT_REGISTRY:
-            item = QListWidgetItem(f"  {artifact['label']}")
-            item.setData(Qt.UserRole, artifact["id"])
-            item.setToolTip(artifact["description"])
+
+        for art in ARTIFACT_REGISTRY:
+            item = QListWidgetItem(f"  {art['icon']}  {art['label']}")
+            item.setData(Qt.UserRole, art["id"])
+            item.setToolTip(art["description"])
+            item.setFont(QFont("Malgun Gothic", 11))
             self.artifact_list.addItem(item)
+
         self.artifact_list.itemClicked.connect(self._on_artifact_clicked)
-        layout.addWidget(self.artifact_list)
+        pv.addWidget(self.artifact_list)
 
-        divider = QFrame()
-        divider.setFrameShape(QFrame.HLine)
-        divider.setObjectName("divider")
-        layout.addWidget(divider)
+        # ── 구분선
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setObjectName("divider")
+        pv.addWidget(line)
 
+        # ── 아티팩트 정보 헤더 (선택된 아티팩트명 + 실행 버튼)
         info_bar = QWidget()
-        info_layout = QHBoxLayout(info_bar)
-        info_layout.setContentsMargins(8, 4, 8, 4)
-        self.art_title_lbl = QLabel("Select an artifact")
-        self.art_title_lbl.setObjectName("art_title")
-        info_layout.addWidget(self.art_title_lbl, stretch=1)
+        info_lay = QHBoxLayout(info_bar)
+        info_lay.setContentsMargins(8, 4, 8, 4)
 
-        self.run_btn = QPushButton("Run")
+        self.art_title_lbl = QLabel("아티팩트를 선택하세요")
+        self.art_title_lbl.setObjectName("art_title")
+        info_lay.addWidget(self.art_title_lbl, stretch=1)
+
+        self.run_btn = QPushButton("▶  추출")
         self.run_btn.setObjectName("run_btn")
         self.run_btn.setFixedWidth(72)
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self._run_selected_artifact)
-        info_layout.addWidget(self.run_btn)
-        layout.addWidget(info_bar)
+        info_lay.addWidget(self.run_btn)
 
+        pv.addWidget(info_bar)
+
+        # ── 결과 영역 (탭: 요약 | 원시)
         self.result_tabs = QTabWidget()
         self.result_tabs.setObjectName("result_tabs")
 
         self.result_summary = QTextEdit()
         self.result_summary.setReadOnly(True)
-        self.result_summary.setFont(QFont("Consolas", self._scaled_pt(10)))
-        self.result_summary.setPlaceholderText("Select an artifact and click Run.")
+        self.result_summary.setFont(QFont("Consolas", 10))
+        self.result_summary.setPlaceholderText("아티팩트를 선택하고 ▶ 추출을 클릭하세요.")
 
         self.result_raw = QTextEdit()
         self.result_raw.setReadOnly(True)
-        self.result_raw.setFont(QFont("Consolas", self._scaled_pt(9)))
+        self.result_raw.setFont(QFont("Consolas", 9))
 
-        self.result_tabs.addTab(self.result_summary, "Summary")
-        self.result_tabs.addTab(self.result_raw, "Raw")
-        layout.addWidget(self.result_tabs, stretch=1)
+        self.result_tabs.addTab(self.result_summary, "요약")
+        self.result_tabs.addTab(self.result_raw,     "원시 데이터")
+
+        pv.addWidget(self.result_tabs, stretch=1)
         return panel
 
+    # ── 이미지 열기 ───────────────────────────────────────────────────────────
+
     def _open_image(self):
-        # NOTE: Show raw/dd style images first and keep split .001 segments visible.
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Forensic Image",
-            "",
-            "Disk Images (*.001 *.dd *.raw *.img);;EWF Images (*.E01 *.e01);;All Files (*)",
+            self, "이미지 파일 선택", "",
+            "Forensic Images (*.E01 *.e01 *.dd *.raw *.img);;All Files (*)"
         )
         if not path:
             return
-
         self.tree.clear()
         self.file_table.setRowCount(0)
         self.hex_view.clear()
@@ -474,173 +418,147 @@ class MainWindow(QMainWindow):
         self.result_raw.clear()
         self.act_export.setEnabled(False)
 
-        worker = LoadImageWorker(path)
-        worker.log_msg.connect(self._log)
-        worker.done.connect(self._on_image_loaded)
-        worker.error.connect(self._on_error)
-        self._keep(worker)
-        worker.start()
+        w = LoadImageWorker(path)
+        w.log_msg.connect(self._log)
+        w.done.connect(self._on_image_loaded)
+        w.error.connect(self._on_error)
+        self._keep(w)
+        w.start()
 
     def _on_image_loaded(self, handler):
         self._handler = handler
-        self.status.showMessage(f"Image loaded: {os.path.basename(handler.image_path)}")
-        self._log(f"[INFO] image loaded with {len(handler.volumes)} volume(s)")
+        self.status.showMessage(f"이미지: {os.path.basename(handler.image_path)}")
+        self._log(f"[INFO] 이미지 로드 완료 – 볼륨 {len(handler.volumes)}개")
 
-        root_item = QTreeWidgetItem([f"[IMG] {os.path.basename(handler.image_path)}"])
-        root_item.setForeground(0, QColor(C_AMBER))
-        self.tree.addTopLevelItem(root_item)
+        img_item = QTreeWidgetItem([f"🖴  {os.path.basename(handler.image_path)}"])
+        img_item.setForeground(0, QColor(C_AMBER))
+        self.tree.addTopLevelItem(img_item)
 
         for vol in handler.volumes:
-            vol_item = QTreeWidgetItem([f"[VOL] {vol['desc']}"])
+            vol_item = QTreeWidgetItem([f"📦  {vol['desc']}"])
             vol_item.setForeground(0, QColor(C_BLUE))
-            self._item_meta[id(vol_item)] = {"fs": vol["fs"], "inode": None, "path": "/", "is_dir": True}
-            vol_item.addChild(QTreeWidgetItem(["Loading..."]))
-            root_item.addChild(vol_item)
+            self._item_meta[id(vol_item)] = {
+                "fs": vol["fs"], "inode": None, "path": "/", "is_dir": True
+            }
+            vol_item.addChild(QTreeWidgetItem(["로딩 중..."]))
+            img_item.addChild(vol_item)
 
-        root_item.setExpanded(True)
+        img_item.setExpanded(True)
+
+        # 이미지 로드 후 아티팩트 목록 활성화
         self.run_btn.setEnabled(self._current_aid is not None)
+        for i in range(self.artifact_list.count()):
+            self.artifact_list.item(i).setFlags(
+                Qt.ItemIsEnabled | Qt.ItemIsSelectable
+            )
+
+    # ── Evidence Tree ─────────────────────────────────────────────────────────
 
     def _on_tree_expanded(self, item):
         meta = self._item_meta.get(id(item))
         if not meta:
             return
-        if item.childCount() == 1 and item.child(0).text(0) == "Loading...":
+        if item.childCount() == 1 and item.child(0).text(0) == "로딩 중...":
             item.takeChildren()
-            worker = ListDirWorker(self._handler, meta["fs"], meta["inode"], meta["path"], item)
-            worker.done.connect(self._on_dir_loaded)
-            worker.error.connect(self._on_error)
-            self._keep(worker)
-            worker.start()
+            w = ListDirWorker(
+                self._handler, meta["fs"], meta["inode"], meta["path"], item
+            )
+            w.log_msg.connect(self._log)
+            w.done.connect(self._on_dir_loaded)
+            w.error.connect(self._on_error)
+            self._keep(w)
+            w.start()
 
     def _on_dir_loaded(self, entries, parent_item):
-        for entry in entries:
-            icon = "[DIR]" if entry.is_dir else self._file_icon(entry.name)
-            child = QTreeWidgetItem([f"{icon}  {entry.name}"])
-            child.setForeground(0, QColor(C_AMBER if entry.is_dir else C_TEXT))
+        for e in entries:
+            icon = "📁" if e.is_dir else self._file_icon(e.name)
+            child = QTreeWidgetItem([f"{icon}  {e.name}"])
+            child.setForeground(0, QColor(C_AMBER if e.is_dir else C_TEXT))
             self._item_meta[id(child)] = {
                 "fs": self._item_meta[id(parent_item)]["fs"],
-                "inode": entry.inode,
-                "path": entry.path,
-                "is_dir": entry.is_dir,
+                "inode": e.inode, "path": e.path, "is_dir": e.is_dir,
             }
-            if entry.is_dir:
-                child.addChild(QTreeWidgetItem(["Loading..."]))
+            if e.is_dir:
+                child.addChild(QTreeWidgetItem(["로딩 중..."]))
             parent_item.addChild(child)
 
     def _on_tree_clicked(self, item):
         meta = self._item_meta.get(id(item))
         if not meta or not meta["is_dir"]:
             return
-        worker = ListDirWorker(self._handler, meta["fs"], meta["inode"], meta["path"], item)
-        worker.done.connect(self._populate_file_table)
-        worker.error.connect(self._on_error)
-        self._keep(worker)
-        worker.start()
+        w = ListDirWorker(
+            self._handler, meta["fs"], meta["inode"], meta["path"], item
+        )
+        w.log_msg.connect(self._log)
+        w.done.connect(self._populate_file_table)
+        w.error.connect(self._on_error)
+        self._keep(w)
+        w.start()
+
+    # ── 파일 테이블 ───────────────────────────────────────────────────────────
 
     def _populate_file_table(self, entries, _item=None):
         self._table_entries = entries
-        self._table_fs = self._item_meta.get(id(self.tree.currentItem()), {}).get("fs")
+        self._table_fs = self._item_meta.get(
+            id(self.tree.currentItem()), {}
+        ).get("fs")
         self.file_table.setRowCount(0)
-
-        for row, entry in enumerate(entries):
+        for row, e in enumerate(entries):
             self.file_table.insertRow(row)
+            icon = "📁 " if e.is_dir else self._file_icon(e.name) + " "
             cells = [
-                QTableWidgetItem(f"{'[DIR]' if entry.is_dir else self._file_icon(entry.name)} {entry.name}"),
-                QTableWidgetItem("" if entry.is_dir else self._fmt_size(entry.size)),
-                QTableWidgetItem("DIR" if entry.is_dir else self._ext(entry.name)),
-                QTableWidgetItem(str(entry.inode)),
+                QTableWidgetItem(icon + e.name),
+                QTableWidgetItem("" if e.is_dir else self._fmt_size(e.size)),
+                QTableWidgetItem("폴더" if e.is_dir else self._ext(e.name)),
+                QTableWidgetItem(str(e.inode)),
             ]
-            for col, cell in enumerate(cells):
-                cell.setForeground(QColor(C_TEXT))
-                self.file_table.setItem(row, col, cell)
+            for col, ci in enumerate(cells):
+                ci.setForeground(QColor(C_TEXT))
+                self.file_table.setItem(row, col, ci)
 
     def _on_file_clicked(self, item):
         row = item.row()
         if row >= len(self._table_entries):
             return
-        entry = self._table_entries[row]
-        if entry.is_dir:
-            # NOTE: Allow directory navigation directly from the file browser.
-            self._table_entries = self._handler.list_directory(entry._fs, entry.inode, entry.path)
-            self._table_fs = entry._fs
-            self._populate_file_table(self._table_entries)
-            self._show_metadata(entry)
-            self.hex_view.clear()
-            self.text_view.clear()
-            self.status.showMessage(f"{entry.path} (directory)")
+        e = self._table_entries[row]
+        if e.is_dir or not self._table_fs:
             return
-        if not self._table_fs:
-            return
-        data = self._handler.read_file(self._table_fs, entry.inode, max_bytes=64 * 1024)
-        self._show_metadata(entry)
+        data = self._handler.read_file(self._table_fs, e.inode, max_bytes=64 * 1024)
         self._show_hex(data)
-        self._show_text(data, entry.name)
-        self.status.showMessage(f"{entry.path} ({self._fmt_size(entry.size)})")
+        self._show_text(data)
+        self.status.showMessage(f"{e.path}  ({self._fmt_size(e.size)})")
 
     def _show_hex(self, data: bytes):
         lines = []
-        for index in range(0, min(len(data), 4096), 16):
-            chunk = data[index:index + 16]
-            hex_part = " ".join(f"{value:02X}" for value in chunk)
-            text_part = "".join(chr(value) if 32 <= value < 127 else "." for value in chunk)
-            lines.append(f"{index:08X}  {hex_part:<48}  {text_part}")
+        for i in range(0, min(len(data), 4096), 16):
+            chunk = data[i:i + 16]
+            hex_part  = " ".join(f"{b:02X}" for b in chunk)
+            text_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+            lines.append(f"{i:08X}  {hex_part:<48}  {text_part}")
         self.hex_view.setPlainText("\n".join(lines))
 
-    def _show_text(self, data: bytes, name: str):
-        ext = os.path.splitext(name)[1].lower()
-        text_like_exts = {
-            ".txt", ".log", ".csv", ".json", ".xml", ".ini", ".cfg", ".reg",
-            ".py", ".md", ".html", ".htm", ".css", ".js", ".ps1", ".bat",
-        }
-        if ext in {".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar"}:
-            self.text_view.setPlainText(
-                "Text preview is not useful for this file type.\n\n"
-                "Recommended direction:\n"
-                "- Keep Metadata as the default quick view.\n"
-                "- Show Hex only for low-level inspection.\n"
-                "- Add a dedicated document parser or external preview later if needed."
-            )
-            return
-        if ext not in text_like_exts and b"\x00" in data[:2048]:
-            self.text_view.setPlainText(
-                "This file looks binary, so a text preview is intentionally suppressed.\n"
-                "Use Metadata for quick triage or Hex for raw inspection."
-            )
-            return
+    def _show_text(self, data: bytes):
         self.text_view.setPlainText(data.decode("utf-8", errors="replace")[:8192])
 
-    def _show_metadata(self, entry):
-        lines = [
-            f"Path: {entry.path}",
-            f"Name: {entry.name}",
-            f"Type: {'Directory' if entry.is_dir else self._ext(entry.name)}",
-            f"Size: {self._fmt_size(entry.size)}",
-            f"Inode: {entry.inode}",
-            f"Created: {self._fmt_dt(entry.created_time)}",
-            f"Modified: {self._fmt_dt(entry.modified_time)}",
-            f"Accessed: {self._fmt_dt(entry.accessed_time)}",
-            f"Changed: {self._fmt_dt(entry.changed_time)}",
-        ]
-        self.meta_view.setPlainText("\n".join(lines))
+    # ── 아티팩트 패널 ─────────────────────────────────────────────────────────
 
     def _on_artifact_clicked(self, item: QListWidgetItem):
         aid = item.data(Qt.UserRole)
         self._current_aid = aid
-        artifact = ARTIFACT_INDEX[aid]
-        self.art_title_lbl.setText(artifact["label"])
+
+        art = next(a for a in ARTIFACT_REGISTRY if a["id"] == aid)
+        self.art_title_lbl.setText(f"{art['icon']}  {art['label']}")
+
+        # 이미지가 로드된 경우만 추출 버튼 활성화
         self.run_btn.setEnabled(self._handler is not None)
 
+        # 캐시된 결과가 있으면 바로 표시
         if aid in self._artifact_cache:
             self._display_artifact(aid, self._artifact_cache[aid])
         else:
-            weight = get_artifact_weight(aid)
             self.result_summary.setPlainText(
-                f"{artifact['label']}\n\n"
-                f"{artifact['description']}\n\n"
-                f"Weight: frequency={weight['frequency']}, "
-                f"probative={weight['probative']}, "
-                f"tamper_resistance={weight['tamper_resistance']}, "
-                f"total={weight['total']}"
+                f"▶ 추출 버튼을 눌러 {art['label']} 데이터를 수집합니다.\n\n"
+                f"{art['description']}"
             )
             self.result_raw.clear()
 
@@ -649,17 +567,20 @@ class MainWindow(QMainWindow):
             return
 
         self.run_btn.setEnabled(False)
-        self.run_btn.setText("...")
-        self.result_summary.setPlainText("Collecting and parsing...")
+        self.run_btn.setText("⏳")
+        self.result_summary.setPlainText("수집 중...")
         self.result_raw.clear()
 
-        worker = ArtifactWorker(self._current_aid, self._handler)
-        worker.log_msg.connect(self._log)
-        worker.done.connect(self._on_artifact_done)
-        worker.error.connect(self._on_artifact_error)
-        worker.finished.connect(lambda: (self.run_btn.setEnabled(True), self.run_btn.setText("Run")))
-        self._keep(worker)
-        worker.start()
+        w = ArtifactWorker(self._current_aid, self._handler)
+        w.log_msg.connect(self._log)
+        w.done.connect(self._on_artifact_done)
+        w.error.connect(self._on_artifact_error)
+        w.finished.connect(lambda: (
+            self.run_btn.setEnabled(True),
+            self.run_btn.setText("▶  추출"),
+        ))
+        self._keep(w)
+        w.start()
 
     def _on_artifact_done(self, aid: str, entries: list):
         self._artifact_cache[aid] = entries
@@ -671,159 +592,108 @@ class MainWindow(QMainWindow):
         self.result_summary.setPlainText(msg)
 
     def _display_artifact(self, aid: str, entries: list):
+        """aid에 따라 포맷된 요약과 원시 데이터를 결과 탭에 표시."""
         if not entries:
-            self.result_summary.setPlainText("No entries were collected.")
-            self.result_raw.clear()
+            self.result_summary.setPlainText("수집된 항목이 없습니다.")
+            self.result_raw.setPlainText("")
             return
 
-        summary = self._format_entries(aid, entries)
-        raw = json.dumps(entries, default=self._json_default, ensure_ascii=False, indent=2)
+        if aid == "userassist":
+            summary, raw = self._format_userassist(entries)
+        elif aid == "jumplist":
+            summary, raw = self._format_jumplist(entries)
+        else:
+            summary = str(entries)
+            raw = summary
+
         self.result_summary.setPlainText(summary)
         self.result_raw.setPlainText(raw)
         self.result_tabs.setCurrentIndex(0)
-        self.status.showMessage(f"{aid}: {len(entries)} entries")
+        self.status.showMessage(f"{aid} – {len(entries)}건")
 
-    def _format_entries(self, aid: str, entries: list) -> str:
-        artifact = ARTIFACT_INDEX[aid]
-        weight = get_artifact_weight(aid)
+    # ── 아티팩트별 포맷터 ─────────────────────────────────────────────────────
+
+    def _format_userassist(self, entries: list) -> tuple[str, str]:
         lines = [
-            "=" * 72,
-            f"{artifact['label']}  total={len(entries)}",
-            f"weight: frequency={weight['frequency']} / probative={weight['probative']} / "
-            f"tamper_resistance={weight['tamper_resistance']} / total={weight['total']}",
-            "=" * 72,
-            "",
+            "=" * 64,
+            f"  UserAssist  –  총 {len(entries)}건",
+            "=" * 64, "",
         ]
+        raw_lines = list(lines)
 
-        for entry in entries[:50]:
-            lines.extend(self._artifact_entry_lines(aid, entry))
-            lines.append("")
+        for e in entries:
+            ts = (e["last_run_time"].strftime("%Y-%m-%d %H:%M:%S UTC")
+                  if e["last_run_time"] else "알 수 없음")
+            name = e["name"] or "(이름 없음)"
+            lines += [
+                f"[{e['guid_type']}]  {name}",
+                f"  사용자: {e.get('username','?')}  |  "
+                f"실행 횟수: {e['run_count']}  |  "
+                f"세션: {e['session_id']}  |  "
+                f"마지막 실행: {ts}",
+                "",
+            ]
+            raw_lines.append(str(e))
 
-        if len(entries) > 50:
-            lines.append(f"... truncated {len(entries) - 50} additional entries")
-        return "\n".join(lines)
+        return "\n".join(lines), "\n".join(raw_lines)
 
-    def _artifact_entry_lines(self, aid: str, entry: dict) -> list[str]:
-        if aid == "userassist":
-            return [
-                f"[{entry.get('guid_type')}] {entry.get('name') or '(no name)'}",
-                f"  user={entry.get('username', '?')} run_count={entry.get('run_count')} last_run={self._fmt_dt(entry.get('last_run_time'))}",
+    def _format_jumplist(self, entries: list) -> tuple[str, str]:
+        lines = [
+            "=" * 64,
+            f"  Jumplist  –  총 {len(entries)}건",
+            "=" * 64, "",
+        ]
+        raw_lines = list(lines)
+
+        for e in entries:
+            ts = (e["access_time"].strftime("%Y-%m-%d %H:%M:%S UTC")
+                  if e.get("access_time") else "알 수 없음")
+            path = e.get("target_path") or e.get("name") or "(경로 없음)"
+            lines += [
+                f"[{e['category']}]  {e['appname']} ({e['appid']})",
+                f"  경로: {path}",
+                f"  사용자: {e.get('username','?')}  |  "
+                f"접근 횟수: {e.get('access_count', 0)}  |  "
+                f"마지막 접근: {ts}",
+                "",
             ]
-        if aid == "jumplist":
-            return [
-                f"[{entry.get('category')}] {entry.get('appname')} ({entry.get('appid')})",
-                f"  path={entry.get('target_path') or entry.get('name')} access_count={entry.get('access_count')} last_access={self._fmt_dt(entry.get('access_time'))}",
-            ]
-        if aid == "prefetch":
-            return [
-                f"{entry.get('executable_name')} ({entry.get('filename')})",
-                f"  run_count={entry.get('run_count')} version={entry.get('format_version')} last_run={self._fmt_dt(entry.get('last_run_time'))}",
-            ]
-        if aid == "amcache":
-            return [
-                f"{entry.get('program_name')}",
-                f"  path={entry.get('file_path')} sha1={entry.get('sha1')} key_time={self._fmt_dt(entry.get('key_timestamp'))}",
-            ]
-        if aid == "shellbags":
-            return [
-                f"{entry.get('shell_path')}",
-                f"  user={entry.get('username')} key_time={self._fmt_dt(entry.get('last_written_time'))}",
-            ]
-        if aid == "mounteddevices":
-            return [
-                f"{entry.get('value_name')} [{entry.get('mapping_type')}]",
-                f"  data={entry.get('decoded_data')}",
-            ]
-        if aid == "usb_registry":
-            return [
-                f"{entry.get('friendly_name') or entry.get('device_id')}",
-                f"  serial={entry.get('serial_number')} class={entry.get('device_class')} first_seen={self._fmt_dt(entry.get('first_seen_time'))}",
-            ]
-        if aid == "outlook_store":
-            return [
-                f"{entry.get('filename')} ({entry.get('store_type')})",
-                f"  user={entry.get('username')} messages={entry.get('message_count')} last_message={self._fmt_dt(entry.get('last_message_time'))}",
-            ]
-        if aid == "printer_spool":
-            return [
-                f"{entry.get('document_name')} [{entry.get('job_id')}]",
-                f"  printer={entry.get('printer_name')} format={entry.get('spool_format')} size={self._fmt_size(entry.get('size_total', 0))}",
-            ]
-        return [str(entry)]
+            raw_lines.append(str(e))
+
+        return "\n".join(lines), "\n".join(raw_lines)
+
+    # ── 결과 내보내기 ─────────────────────────────────────────────────────────
 
     def _export_results(self):
         if not self._current_aid:
             return
+        art = next((a for a in ARTIFACT_REGISTRY if a["id"] == self._current_aid), None)
         default_name = f"{self._current_aid}_result.txt"
-        path, _ = QFileDialog.getSaveFileName(self, "Save Result", default_name, "Text Files (*.txt)")
-        if not path:
-            return
-        with open(path, "w", encoding="utf-8") as stream:
-            stream.write(self.result_summary.toPlainText())
-        self._log(f"[INFO] exported result: {path}")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "결과 저장", default_name, "Text Files (*.txt)"
+        )
+        if path:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.result_summary.toPlainText())
+            self._log(f"[INFO] 저장 완료: {path}")
+
+    # ── 유틸 ─────────────────────────────────────────────────────────────────
 
     def _log(self, msg: str):
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_output.append(f"[{timestamp}] {msg}")
+        ts = datetime.now().strftime("%H:%M:%S")
+        self.log_output.append(f"[{ts}] {msg}")
 
     def _on_error(self, msg: str):
         self._log(msg)
         self.status.showMessage(msg)
 
-    def _keep(self, worker):
-        self._workers.append(worker)
-        worker.finished.connect(lambda: self._workers.remove(worker) if worker in self._workers else None)
-
-    def _change_font_scale(self, delta: int):
-        # NOTE: Adjust the persisted scale in fixed 10 percent steps.
-        value = max(50, min(200, self._font_scale_percent + delta))
-        self._set_font_scale_percent(value)
-
-    def _set_font_scale_percent(self, value: int):
-        # NOTE: Re-apply the stylesheet so the whole interface scales together.
-        self._font_scale_percent = value
-        self._save_font_scale_percent()
-        self._apply_dynamic_fonts()
-        self._apply_style()
-
-    def _apply_dynamic_fonts(self):
-        # NOTE: Widgets with explicit fonts need manual updates when scale changes.
-        self.log_output.setFont(QFont("Consolas", self._scaled_pt(9)))
-        self.hex_view.setFont(QFont("Consolas", self._scaled_pt(10)))
-        self.text_view.setFont(QFont("Consolas", self._scaled_pt(10)))
-        self.result_summary.setFont(QFont("Consolas", self._scaled_pt(10)))
-        self.result_raw.setFont(QFont("Consolas", self._scaled_pt(9)))
-        for index in range(self.artifact_list.count()):
-            self.artifact_list.item(index).setFont(QFont("Malgun Gothic", self._scaled_pt(self._base_font_pt)))
-        self.font_scale_label.setText(f"{self._font_scale_percent}%")
-        self.font_down_btn.setEnabled(self._font_scale_percent > 50)
-        self.font_up_btn.setEnabled(self._font_scale_percent < 200)
-
-    def _scaled_pt(self, base_pt: int) -> int:
-        return max(int(round(base_pt * self._font_scale_percent / 100)), 1)
-
-    def _load_font_scale_percent(self) -> int:
-        # NOTE: Load persisted UI scale if the settings file is present.
-        try:
-            with open(SETTINGS_PATH, "r", encoding="utf-8") as stream:
-                data = json.load(stream)
-            value = int(data.get("font_scale_percent", 100))
-            return max(50, min(200, value))
-        except Exception:
-            return 100
-
-    def _save_font_scale_percent(self) -> None:
-        # NOTE: Save the UI scale so the next run restores the same value.
-        try:
-            with open(SETTINGS_PATH, "w", encoding="utf-8") as stream:
-                json.dump({"font_scale_percent": self._font_scale_percent}, stream, ensure_ascii=False, indent=2)
-        except Exception as exc:
-            logger.debug("failed to save ui settings: %s", exc)
+    def _keep(self, w):
+        self._workers.append(w)
+        w.finished.connect(
+            lambda: self._workers.remove(w) if w in self._workers else None
+        )
 
     @staticmethod
     def _fmt_size(size):
-        if size is None:
-            return "?"
         for unit in ("B", "KB", "MB", "GB"):
             if size < 1024:
                 return f"{size:.1f} {unit}"
@@ -833,45 +703,21 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _ext(name):
         ext = os.path.splitext(name)[1].lower()
-        return ext.lstrip(".").upper() if ext else "FILE"
-
-    @staticmethod
-    def _fmt_dt(value):
-        if not value:
-            return "N/A"
-        if getattr(value, "tzinfo", None) is None:
-            value = value.replace(tzinfo=timezone.utc)
-        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-
-    @staticmethod
-    def _json_default(value):
-        if isinstance(value, datetime):
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc).isoformat()
-        return str(value)
+        return ext.lstrip(".").upper() if ext else "파일"
 
     @staticmethod
     def _file_icon(name):
-        ext = os.path.splitext(name)[1].lower()
         icons = {
-            ".exe": "[EXE]",
-            ".dll": "[DLL]",
-            ".sys": "[SYS]",
-            ".txt": "[TXT]",
-            ".log": "[LOG]",
-            ".csv": "[CSV]",
-            ".dat": "[DAT]",
-            ".db": "[DB]",
-            ".sqlite": "[DB]",
-            ".lnk": "[LNK]",
-            ".pf": "[PF]",
-            ".jpg": "[IMG]",
-            ".png": "[IMG]",
-            ".zip": "[ZIP]",
-            ".rar": "[ZIP]",
+            ".exe": "⚙", ".dll": "⚙", ".sys": "⚙",
+            ".txt": "📄", ".log": "📄", ".csv": "📄",
+            ".dat": "🗃", ".db": "🗃", ".sqlite": "🗃",
+            ".lnk": "🔗", ".pf": "📋",
+            ".jpg": "🖼", ".png": "🖼",
+            ".zip": "🗜", ".rar": "🗜",
         }
-        return icons.get(ext, "[FILE]")
+        return icons.get(os.path.splitext(name)[1].lower(), "📄")
+
+    # ── 스타일 ────────────────────────────────────────────────────────────────
 
     def _apply_style(self):
         self.setStyleSheet(f"""
@@ -879,7 +725,7 @@ class MainWindow(QMainWindow):
                 background-color: {C_BG};
                 color: {C_TEXT};
                 font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-                font-size: {self._scaled_pt(self._base_font_pt)}pt;
+                font-size: 12px;
             }}
             QToolBar {{
                 background-color: {C_HEADER};
@@ -892,50 +738,52 @@ class MainWindow(QMainWindow):
                 color: {C_TEXT};
                 padding: 5px 14px;
                 border-radius: 5px;
-                font-size: {self._scaled_pt(self._base_font_pt)}pt;
+                font-size: 12px;
             }}
             QToolBar QToolButton:hover {{
                 background: {C_SELECT};
                 color: {C_BLUE};
             }}
+            QToolBar QToolButton:disabled {{ color: {C_SUBTEXT}; }}
+
             QLabel#panel_header {{
                 background: {C_HEADER};
                 color: {C_BLUE};
                 font-weight: bold;
-                font-size: {max(self._scaled_pt(self._base_font_pt - 1), 8)}pt;
+                font-size: 11px;
                 padding-left: 8px;
                 border-bottom: 1px solid {C_BORDER};
             }}
             QLabel#log_header {{
                 background: {C_HEADER};
                 color: {C_SUBTEXT};
-                font-size: {max(self._scaled_pt(self._base_font_pt - 2), 8)}pt;
+                font-size: 10px;
                 padding-left: 8px;
             }}
             QLabel#art_title {{
                 font-weight: bold;
-                font-size: {self._scaled_pt(self._base_font_pt)}pt;
+                font-size: 12px;
                 color: {C_TEXT};
             }}
-            QLabel#font_scale_label {{
-                color: {C_TEXT};
-                padding: 0 4px;
-                min-width: 44px;
-            }}
+
+            /* Evidence Tree */
             QTreeWidget {{
                 background: {C_PANEL};
                 border: none;
                 border-right: 1px solid {C_BORDER};
             }}
-            QTreeWidget::item:selected, QListWidget::item:selected, QTableWidget::item:selected {{
-                background: {C_SELECT};
-                color: {C_BLUE};
-            }}
+            QTreeWidget::item {{ padding: 2px 0; }}
+            QTreeWidget::item:selected {{ background: {C_SELECT}; color: {C_BLUE}; }}
+            QTreeWidget::item:hover    {{ background: {C_SELECT}; }}
+
+            /* 파일 테이블 */
             QTableWidget {{
                 background: {C_PANEL};
                 border: none;
                 gridline-color: {C_BORDER};
             }}
+            QTableWidget::item {{ padding: 2px 4px; }}
+            QTableWidget::item:selected {{ background: {C_SELECT}; color: {C_BLUE}; }}
             QHeaderView::section {{
                 background: {C_HEADER};
                 color: {C_SUBTEXT};
@@ -943,8 +791,10 @@ class MainWindow(QMainWindow):
                 border-bottom: 1px solid {C_BORDER};
                 border-right: 1px solid {C_BORDER};
                 padding: 4px 8px;
-                font-size: {max(self._scaled_pt(self._base_font_pt - 1), 8)}pt;
+                font-size: 11px;
             }}
+
+            /* 아티팩트 목록 */
             QListWidget {{
                 background: {C_PANEL};
                 border: none;
@@ -956,6 +806,14 @@ class MainWindow(QMainWindow):
                 border-bottom: 1px solid {C_BORDER};
                 color: {C_TEXT};
             }}
+            QListWidget::item:selected {{
+                background: {C_SELECT};
+                color: {C_BLUE};
+                font-weight: bold;
+            }}
+            QListWidget::item:hover {{ background: {C_SELECT}; }}
+
+            /* 추출 버튼 */
             QPushButton#run_btn {{
                 background: {C_BLUE};
                 color: white;
@@ -963,30 +821,12 @@ class MainWindow(QMainWindow):
                 border-radius: 4px;
                 padding: 5px 10px;
                 font-weight: bold;
-                font-size: {max(self._scaled_pt(self._base_font_pt - 1), 8)}pt;
+                font-size: 11px;
             }}
-            QPushButton#run_btn:hover {{
-                background: #1d4ed8;
-            }}
-            QPushButton#run_btn:disabled {{
-                background: {C_SUBTEXT};
-            }}
-            QPushButton#font_scale_btn {{
-                background: transparent;
-                color: {C_TEXT};
-                border: none;
-                padding: 0 2px;
-                min-width: 20px;
-            }}
-            QPushButton#font_scale_btn:hover {{
-                color: {C_BLUE};
-            }}
-            QPushButton#font_scale_btn:pressed {{
-                color: #1d4ed8;
-            }}
-            QPushButton#font_scale_btn:disabled {{
-                color: {C_SUBTEXT};
-            }}
+            QPushButton#run_btn:hover   {{ background: #1d4ed8; }}
+            QPushButton#run_btn:disabled {{ background: {C_SUBTEXT}; }}
+
+            /* 뷰어 탭 */
             QTabWidget#viewer_tabs::pane,
             QTabWidget#result_tabs::pane {{
                 border: 1px solid {C_BORDER};
@@ -1005,23 +845,24 @@ class MainWindow(QMainWindow):
                 color: {C_BLUE};
                 border-bottom: 2px solid {C_BLUE};
             }}
+
             QTextEdit {{
                 background: {C_PANEL};
                 color: {C_TEXT};
                 border: none;
                 selection-background-color: {C_SELECT};
             }}
-            QFrame#divider {{
-                color: {C_BORDER};
+            QFrame#divider {{ color: {C_BORDER}; }}
+
+            QScrollBar:vertical {{
+                background: {C_BG};
+                width: 8px;
+                border-radius: 4px;
             }}
-            QStatusBar {{
-                background: {C_HEADER};
-                color: {C_SUBTEXT};
-                font-size: {max(self._scaled_pt(self._base_font_pt - 1), 8)}pt;
-            }}
-            QSplitter::handle {{
+            QScrollBar::handle:vertical {{
                 background: {C_BORDER};
-                width: 1px;
-                height: 1px;
+                border-radius: 4px;
             }}
+            QStatusBar {{ background: {C_HEADER}; color: {C_SUBTEXT}; font-size: 11px; }}
+            QSplitter::handle {{ background: {C_BORDER}; width: 1px; height: 1px; }}
         """)
