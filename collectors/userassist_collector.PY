@@ -72,7 +72,6 @@ def _collect_from_hive(ntuser_path: str) -> list[dict]:
         try:
             count_key = reg.open(key_path)
         except Registry.RegistryKeyNotFoundException:
-            logger.warning("[%s] 키 없음: %s", username, key_path)
             continue
         except Exception as exc:
             logger.error("[%s] 키 열기 실패: %s", username, exc)
@@ -92,7 +91,6 @@ def _collect_from_hive(ntuser_path: str) -> list[dict]:
                         "collected_at": collected_at,
                     })
 
-    logger.info("[%s] UserAssist %d건 수집", username, len(results))
     return results
 
 
@@ -124,15 +122,10 @@ def collect(mount_path: str) -> list[dict]:
     hive_files = find_ntuser_dat_files(mount_path)
 
     if not hive_files:
-        logger.warning("NTUSER.DAT 파일을 찾지 못했습니다: %s", mount_path)
         return []
-
-    logger.info("NTUSER.DAT 발견: %d개", len(hive_files))
 
     all_results = []
     for hive_path in hive_files:
         results = _collect_from_hive(hive_path)
         all_results.extend(results)
-
-    logger.info("전체 UserAssist 수집 완료 – %d건", len(all_results))
     return all_results

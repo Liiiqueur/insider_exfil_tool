@@ -1,7 +1,8 @@
 import os
 import tempfile
 import logging
-from datetime import datetime
+
+from collectors.artifact_utils import iso_now, iter_user_directories
 
 logger = logging.getLogger(__name__)
 
@@ -785,21 +786,15 @@ def _find_users_root(handler, fs):
 
 def collect_from_image(handler, fs) -> list[dict]:
     results = []
-    collected_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    collected_at = iso_now()
 
-    users_root = _find_users_root(handler, fs)
-    if not users_root:
+    user_entries = iter_user_directories(handler, fs)
+    if not user_entries:
         return results
 
-    user_entries = _list_dir(handler, fs, users_root)
-
     for user_entry in user_entries:
-        if not user_entry.is_dir:
-            continue
-
-        username = user_entry.name
-        if username.lower() in SKIP_USERS:
-            continue
+        username = user_entry["username"]
+        user_path = user_entry["path"].rstrip("/")
 
         logger.info(f"[USER] {username}")
 
@@ -808,7 +803,7 @@ def collect_from_image(handler, fs) -> list[dict]:
             ("CustomDestinations", ".customdestinations-ms"),
         ):
             dir_path = (
-                f"{users_root}/{username}/AppData/Roaming/"
+                f"{user_path}/AppData/Roaming/"
                 f"Microsoft/Windows/Recent/{jl_type}"
             )
 
@@ -864,11 +859,13 @@ def collect_from_image(handler, fs) -> list[dict]:
 
 def collect_from_directory(mount_root: str) -> list[dict]:
     results = []
-    collected_at = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    collected_at = iso_now()
 
     users_root_candidates = [
         os.path.join(mount_root, "Users"),
         os.path.join(mount_root, "C", "Users"),
+        os.path.join(mount_root, "Documents and Settings"),
+        os.path.join(mount_root, "C", "Documents and Settings"),
     ]
 
     users_root = None
@@ -879,7 +876,6 @@ def collect_from_directory(mount_root: str) -> list[dict]:
             break
 
     if not users_root:
-        logger.error("Users 폴더 없음")
         return results
 
     for username in os.listdir(users_root):
