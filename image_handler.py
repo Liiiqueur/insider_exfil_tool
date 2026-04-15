@@ -1,6 +1,7 @@
 import os
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,20 @@ class FsEntry:
     is_dir: bool
     size:   int    = 0
     inode:  int    = 0
+    created_time:  object = None
+    modified_time: object = None
+    accessed_time: object = None
+    changed_time:  object = None
     _fs:    object = field(default=None, repr=False)
+
+
+def _safe_unix_ts(timestamp):
+    if not timestamp:
+        return None
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+    except Exception:
+        return None
 
 
 class ImageHandler:
@@ -125,20 +139,82 @@ class ImageHandler:
             is_dir  = f.info.meta.type == pytsk3.TSK_FS_META_TYPE_DIR
             ch_path = f"{path.rstrip('/')}/{name}"
             entries.append(FsEntry(
-                name=name, path=ch_path, is_dir=is_dir,
-                size=f.info.meta.size, inode=f.info.meta.addr, _fs=fs,
+                name=name,
+                path=ch_path,
+                is_dir=is_dir,
+                size=f.info.meta.size,
+                inode=f.info.meta.addr,
+                created_time=_safe_unix_ts(getattr(f.info.meta, "crtime", 0)),
+                modified_time=_safe_unix_ts(getattr(f.info.meta, "mtime", 0)),
+                accessed_time=_safe_unix_ts(getattr(f.info.meta, "atime", 0)),
+                changed_time=_safe_unix_ts(getattr(f.info.meta, "ctime", 0)),
+                _fs=fs,
             ))
         entries.sort(key=lambda e: (not e.is_dir, e.name.lower()))
         return entries
 
     def read_file(self, fs, inode: int, max_bytes: int = 1024 * 1024) -> bytes:
         try:
-            f    = fs.open_meta(inode=inode)
-            size = min(f.info.meta.size, max_bytes)
+            f = fs.open_meta(inode=inode)
+            meta = getattr(f.info, "meta", None)
+            if meta is None:
+                return b""
+            size = min(getattr(meta, "size", 0), max_bytes)
+            if size <= 0:
+                return b""
             return f.read_random(0, size)
         except Exception as e:
             logger.warning("파일 읽기 실패 inode=%d: %s", inode, e)
             return b""
+
+    def extract_entry(self, entry: FsEntry, destination_dir: str) -> int:
+        if entry.is_dir:
+            target_dir = self._unique_destination(os.path.join(destination_dir, entry.name))
+            os.makedirs(target_dir, exist_ok=True)
+            return self._extract_directory(entry._fs, entry.inode, entry.path, target_dir)
+        target_path = self._unique_destination(os.path.join(destination_dir, entry.name))
+        self._extract_file(entry._fs, entry.inode, target_path)
+        return 1
+
+    def _extract_directory(self, fs, inode: int, path: str, destination_dir: str) -> int:
+        extracted = 0
+        for child in self.list_directory(fs, inode=inode, path=path):
+            if child.is_dir:
+                child_dir = os.path.join(destination_dir, child.name)
+                os.makedirs(child_dir, exist_ok=True)
+                extracted += self._extract_directory(child._fs, child.inode, child.path, child_dir)
+                continue
+            target_path = self._unique_destination(os.path.join(destination_dir, child.name))
+            self._extract_file(child._fs, child.inode, target_path)
+            extracted += 1
+        return extracted
+
+    def _extract_file(self, fs, inode: int, destination_path: str, chunk_size: int = 1024 * 1024) -> None:
+        file_obj = fs.open_meta(inode=inode)
+        meta = getattr(file_obj.info, "meta", None)
+        size = getattr(meta, "size", 0) if meta is not None else 0
+        os.makedirs(os.path.dirname(destination_path), exist_ok=True)
+        with open(destination_path, "wb") as stream:
+            offset = 0
+            while offset < size:
+                to_read = min(chunk_size, size - offset)
+                chunk = file_obj.read_random(offset, to_read)
+                if not chunk:
+                    break
+                stream.write(chunk)
+                offset += len(chunk)
+
+    @staticmethod
+    def _unique_destination(path: str) -> str:
+        if not os.path.exists(path):
+            return path
+        base, ext = os.path.splitext(path)
+        index = 1
+        while True:
+            candidate = f"{base}_{index}{ext}"
+            if not os.path.exists(candidate):
+                return candidate
+            index += 1
 
     def find_ntuser_dat(self, fs) -> list[dict]:
         results = []
