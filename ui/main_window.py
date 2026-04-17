@@ -50,6 +50,11 @@ from collectors import (
     recentdocs_collector,
     shellbags_collector,
     userassist_collector,
+    usb_collector,
+    spool_collector,
+    prefetch_collector,
+    amcache_collector,
+    ost_pst_collector,
 )
 from collectors.artifact_utils import cleanup_temp_paths
 from parsers import (
@@ -62,6 +67,11 @@ from parsers import (
     recentdocs_parser,
     shellbags_parser,
     userassist_parser,
+    usb_parser,
+    spool_parser,
+    prefetch_parser,
+    amcache_parser,
+    ost_pst_parser,
 )
 from parsers.artifact_weights import attach_artifact_weight
 
@@ -92,6 +102,11 @@ ARTIFACT_REGISTRY = [
     {"id": "jumplist", "label": "Jumplist", "description": "Recent file and application history", "color": C_PURPLE},
     {"id": "shellbags", "label": "Shellbags", "description": "Explorer folder access traces", "color": C_BLUE},
     {"id": "mounteddevices", "label": "MountedDevices", "description": "Drive letter and volume mapping data", "color": C_PURPLE},
+    {"id": "usb", "label": "USB Devices", "description": "USB device connection and usage traces from registry and system logs", "color": C_AMBER},
+    {"id": "spool", "label": "Print Spool", "description": "Printer spool files (.SPL/.SHD) including print jobs", "color": C_RED},
+    {"id": "prefetch", "label": "Prefetch", "description": "Program execution traces from Windows Prefetch files", "color": C_GREEN},
+    {"id": "amcache", "label": "Amcache", "description": "Application metadata and execution traces from Amcache.hve", "color": C_GREEN},
+    {"id": "ost_pst", "label": "OST/PST (Outlook)", "description": "Extracts Outlook PST/OST metadata, including deleted items", "color": C_BLUE},
 ]
 ARTIFACT_INDEX = {item["id"]: item for item in ARTIFACT_REGISTRY}
 
@@ -159,6 +174,11 @@ ARTIFACT_RUNNERS = {
     "jumplist": lambda handler, log_cb: _run_jumplist(handler, log_cb),
     "shellbags": lambda handler, log_cb: _run_module(handler, log_cb, shellbags_collector, shellbags_parser),
     "mounteddevices": lambda handler, log_cb: _run_module(handler, log_cb, mounteddevices_collector, mounteddevices_parser),
+    "usb": lambda handler, log_cb: _run_module(handler, log_cb, usb_collector, usb_parser),
+    "spool": lambda handler, log_cb: _run_module(handler, log_cb, spool_collector, spool_parser),
+    "prefetch": lambda handler, log_cb: _run_module(handler, log_cb, prefetch_collector, prefetch_parser),
+    "amcache": lambda handler, log_cb: _run_module(handler, log_cb, amcache_collector, amcache_parser),
+    "ost_pst": lambda handler, log_cb: _run_module(handler, log_cb, ost_pst_collector, ost_pst_parser),
 }
 
 
@@ -1013,8 +1033,7 @@ class MainWindow(QMainWindow):
 
     def _summary_columns(self, aid: str) -> list[tuple[str, str]]:
         if aid == "filesystem":
-            return [
-                ("artifact", "Artifact"),
+            return [("artifact", "Artifact"),
                 ("path", "Path"),
                 ("entry_type", "Type"),
                 ("size", "Size"),
@@ -1040,6 +1059,66 @@ class MainWindow(QMainWindow):
             return [("user", "User"), ("path", "Path"), ("last_written_time", "Last Written Time")]
         if aid == "mounteddevices":
             return [("value_name", "Value Name"), ("mapping_type", "Mapping Type"), ("decoded_data", "Decoded Data")]
+        if aid == "usb":
+            return [
+                ("artifact_source",    "Source"),
+                ("friendly_name",      "Friendly Name"),
+                ("vendor",             "Vendor"),
+                ("product",            "Product"),
+                ("serial_number",      "Serial Number"),
+                ("is_unique_serial",   "Unique S/N"),
+                ("vendor_id",          "VID"),
+                ("product_id",         "PID"),
+                ("last_arrival_time",  "Last Connected"),
+                ("last_removal_time",  "Last Removed"),
+                ("first_install_time", "First Installed"),
+                ("install_time",       "Install Date"),
+            ]
+        if aid == "spool":
+            return [
+                ("job_id", "Job ID"),
+                ("user", "User"),
+                ("document_name", "Document"),
+                ("timestamp", "Timestamp"),
+                ("source_path", "Path"),
+            ]
+        if aid == "prefetch":
+            return [
+                ("executable", "Executable"),
+                ("run_count", "Run Count"),
+                ("last_run_time", "Last Run"),
+                (   "source_path", "Path"),
+            ]
+        if aid == "amcache":
+            return [
+                ("file_name", "File Name"),
+                ("file_path", "Path"),
+                ("sha1", "SHA1"),
+                ("size", "Size"),
+                ("publisher", "Publisher"),
+                ("product", "Product"),
+                ("last_modified", "Last Modified"),
+            ]
+        if aid == "ost_pst":
+            return [
+                ("file_type",        "Type"),
+                ("username",         "User"),
+                ("folder_path",      "Folder"),
+                ("item_type",        "Item Type"),
+                ("subject",          "Subject"),
+                ("sender_name",      "Sender"),
+                ("sender_email",     "Sender Email"),
+                ("recipients_to",    "To"),
+                ("has_attachment",   "Attach?"),
+                ("attachment_count", "# Att"),
+                ("delivery_time",    "Delivery Time"),
+                ("submit_time",      "Submit Time"),
+                ("is_deleted",       "Deleted"),
+                ("deletion_type",    "Del Type"),
+                ("x_originating_ip", "Orig IP"),
+                ("message_id",       "Message-ID"),
+            ]
+        
         return [("value", "Value")]
 
     def _summary_row(self, aid: str, entry: dict) -> dict:
@@ -1125,6 +1204,65 @@ class MainWindow(QMainWindow):
                 "mapping_type": entry.get("mapping_type", ""),
                 "decoded_data": entry.get("decoded_data", ""),
             }
+        if aid == "usb":
+            return {
+                "artifact_source":    entry.get("artifact_source", ""),
+                "friendly_name":      entry.get("friendly_name", "") or entry.get("product", ""),
+                "vendor":             entry.get("vendor", ""),
+                "product":            entry.get("product", ""),
+                "serial_number":      entry.get("serial_number", ""),
+                "is_unique_serial":   "Yes" if entry.get("is_unique_serial") else "No (OS-generated)",
+                "vendor_id":          entry.get("vendor_id", ""),
+                "product_id":         entry.get("product_id", ""),
+                "last_arrival_time":  self._fmt_dt(entry.get("last_arrival_time")),
+                "last_removal_time":  self._fmt_dt(entry.get("last_removal_time")),
+                "first_install_time": self._fmt_dt(entry.get("first_install_time")),
+                "install_time":       self._fmt_dt(entry.get("install_time")),
+            }
+        if aid == "spool":
+            return {
+                "job_id": str(entry.get("job_id", "")),
+                "user": entry.get("user", ""),
+                "document_name": entry.get("document_name", ""),
+                "timestamp": self._fmt_dt(entry.get("timestamp")),
+                "source_path": entry.get("source_path", ""),
+            }
+        if aid == "prefetch":
+            return {
+                "executable": entry.get("executable", ""),
+                "run_count": str(entry.get("run_count", "")),
+                "last_run_time": self._fmt_dt(entry.get("last_run_time")),
+                "source_path": entry.get("source_path", ""),
+            }
+        if aid == "amcache":
+            return {
+                "file_name": entry.get("file_name", ""),
+                "file_path": entry.get("file_path", ""),
+                "sha1": entry.get("sha1", ""),
+                "size": str(entry.get("size", "")),
+                "publisher": entry.get("publisher", ""),
+                "product": entry.get("product", ""),
+                "last_modified": self._fmt_dt(entry.get("last_modified")),
+            }
+        if aid == "ost_pst":
+            return {
+                "file_type": entry.get("file_type", ""),
+                "username": entry.get("username", ""),
+                "folder_path": entry.get("folder_path", ""),
+                "item_type": entry.get("item_type", ""),
+                "subject": entry.get("subject", ""),
+                "sender_name": entry.get("sender_name", ""),
+                "sender_email": entry.get("sender_email", ""),
+                "recipients_to": entry.get("recipients_to", ""),
+                "has_attachment": "Yes" if entry.get("has_attachment") else "",
+                "attachment_count": str(entry.get("attachment_count") or ""),
+                "delivery_time": self._fmt_dt(entry.get("delivery_time")),
+                "submit_time": self._fmt_dt(entry.get("submit_time")),
+                "is_deleted": "Yes" if entry.get("is_deleted") else "",
+                "deletion_type": entry.get("deletion_type") or "",
+                "x_originating_ip": entry.get("x_originating_ip", ""),
+                "message_id": entry.get("message_id", ""),
+            }
         return {"value": str(entry)}
 
     def _summary_export_text(self, aid: str, entries: list) -> str:
@@ -1190,7 +1328,7 @@ class MainWindow(QMainWindow):
         self.filesystem_filter_bar.setVisible(visible)
 
     def _summary_sort_value(self, entry: dict, key: str, display_value: str):
-        if key in {"created_time", "modified_time", "accessed_time", "changed_time"}:
+        if key in {"created_time", "modified_time", "accessed_time", "changed_time", "install_time", "first_install_time", "last_arrival_time", "last_removal_time", "delivery_time", "submit_time", "creation_time"}:
             ts = entry.get(key)
             return ts.timestamp() if ts else float("-inf")
         if key == "size":

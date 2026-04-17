@@ -1,0 +1,5 @@
+PyQt5
+pytsk3
+python-registry
+regipy
+libpff-python
