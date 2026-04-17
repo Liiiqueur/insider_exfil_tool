@@ -1,25 +1,3 @@
-"""
-USB Device Artifact Parser
-===========================
-usb_collector.collect()가 반환한 raw 항목들을 정규화·병합·정렬합니다.
-
-처리 흐름:
-  1. 입력 항목을 source 기준으로 분리 (USBSTOR vs Enum\\USB)
-  2. Enum\\USB 항목에서 시리얼 → (VID, PID) 역참조 테이블 구성
-  3. USBSTOR 항목에 VID/PID를 병합 (내부자 유출 조사에서 장치 특정에 활용)
-  4. Enum\\USB에만 존재하는 비저장 장치 항목도 별도 수집
-  5. last_arrival_time 내림차순 정렬 → 최근 연결 장치가 상단
-
-시리얼 번호 중복 제거:
-  - USBSTOR와 Enum\\USB는 같은 시리얼을 참조할 수 있음
-  - USBSTOR 쪽이 더 풍부한 메타데이터(FriendlyName, ParentIdPrefix 등)를 가지므로
-    Enum\\USB에서 VID/PID만 보완하고 USBSTOR 항목을 우선 사용
-
-시리얼 번호 고유성:
-  - is_unique_serial=True  : 장치가 제조사 부여 시리얼 보유 (추적 가능)
-  - is_unique_serial=False : '&'로 시작하는 OS 자동 생성 시리얼 (장치 교체 시 변경됨)
-"""
-
 import logging
 from datetime import datetime, timezone
 from typing import Optional

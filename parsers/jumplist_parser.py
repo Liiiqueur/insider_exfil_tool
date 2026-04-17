@@ -1,31 +1,3 @@
-"""
-AutomaticDestinations (CFB) 와 CustomDestinations (순차 LNK) 를 파싱한다.
-
-의존 라이브러리:
-    pip install olefile        # CFB (AutomaticDestinations) 파싱용
-
-LNK 파일 구조 (MS-SHLLINK):
-  0x00  4   HeaderSize (0x4C 고정)
-  0x14  4   LinkFlags
-  0x1C  8   CreationTime  (FILETIME)
-  0x24  8   AccessTime    (FILETIME)
-  0x2C  8   WriteTime     (FILETIME)
-  0x34  4   FileSize
-  → 이후 IDList / LinkInfo / StringData 가변 구조
-
-AutomaticDestinations CFB 스트림:
-  숫자 스트림 ("0","1",..) = 개별 LNK
-  "DestList"              = 접근 시간/횟수 메타데이터
-
-DestList 엔트리 구조:
-  0x68  4   Entry ID  (숫자 스트림 이름과 매핑)
-  0x70  8   마지막 접근 시간 (FILETIME)
-  0x78  4   PIN 상태  (-1=비고정)
-  0x7C  4   접근 횟수
-  0x80  2   파일명 UTF-16 문자 수
-  0x82  ?   파일명 (UTF-16 LE)
-"""
-
 import struct
 import logging
 from datetime import datetime, timezone
