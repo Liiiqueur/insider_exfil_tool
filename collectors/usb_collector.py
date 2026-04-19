@@ -34,12 +34,6 @@ _SYSTEM_HIVE_CANDIDATES = [
 # ─── 내부 유틸리티 ─────────────────────────────────────────────────────────────
 
 def _filetime_to_dt(raw: bytes) -> Optional[datetime]:
-    """
-    8바이트 리틀엔디언 FILETIME → UTC datetime 변환.
-
-    FILETIME은 1601-01-01 00:00:00 UTC를 기준으로 100ns 단위의 64비트 정수.
-    값이 0이면 None 반환.
-    """
     if not raw or len(raw) < 8:
         return None
     value = struct.unpack_from("<Q", raw)[0]
@@ -53,7 +47,6 @@ def _filetime_to_dt(raw: bytes) -> Optional[datetime]:
 
 
 def _open_hive(path: str):
-    """python-registry로 오프라인 레지스트리 하이브를 엽니다."""
     try:
         from Registry import Registry
         return Registry.Registry(path)
@@ -66,7 +59,6 @@ def _open_hive(path: str):
 
 
 def _safe_value(key, name: str, default=None):
-    """레지스트리 값 안전 읽기. 예외 발생 시 default 반환."""
     try:
         return key.value(name).value()
     except Exception:
@@ -74,11 +66,6 @@ def _safe_value(key, name: str, default=None):
 
 
 def _clean_inf_string(raw: str) -> str:
-    """
-    INF 리소스 문자열 접두사 제거.
-    예: "@oem5.inf,%string.desc%;USB 대용량 저장 장치"
-        → "USB 대용량 저장 장치"
-    """
     if not raw:
         return ""
     if ";" in raw:
@@ -87,12 +74,6 @@ def _clean_inf_string(raw: str) -> str:
 
 
 def _resolve_controlsets(reg) -> list:
-    """
-    SYSTEM 하이브의 Select\\Current 값을 읽어 우선 파싱할
-    ControlSet 이름 목록을 반환합니다.
-
-    예: Current=1 → ["ControlSet001", "ControlSet002", "ControlSet003"]
-    """
     ordered = []
     try:
         select_key = reg.open("Select")
@@ -108,12 +89,6 @@ def _resolve_controlsets(reg) -> list:
 
 
 def _read_device_timestamps(serial_key) -> dict:
-    """
-    장치 시리얼 키의 Properties\\{GUID}\\{prop_id} 하위 키에서
-    FILETIME 타임스탬프 4종을 읽어 dict로 반환합니다.
-
-    반환 키: install_time, first_install_time, last_arrival_time, last_removal_time
-    """
     result = {}
     try:
         # Properties 키 탐색 (1단계씩 내려가야 함 - subkey()는 단일 계층만 허용)
@@ -143,7 +118,6 @@ def _read_device_timestamps(serial_key) -> dict:
 
 
 def _parse_hardware_id(hw_ids) -> str:
-    """HardwareID (REG_MULTI_SZ 또는 REG_SZ)에서 첫 번째 항목 추출."""
     if isinstance(hw_ids, list):
         return hw_ids[0] if hw_ids else ""
     if isinstance(hw_ids, str):
@@ -154,15 +128,6 @@ def _parse_hardware_id(hw_ids) -> str:
 # ─── USBSTOR 수집 ──────────────────────────────────────────────────────────────
 
 def collect_usbstor(hive_path: str) -> list:
-    """
-    SYSTEM\\ControlSetXXX\\Enum\\USBSTOR 에서 USB 저장장치 항목 수집.
-
-    USBSTOR 하위의 디바이스 타입 키 이름 형식:
-      Disk&Ven_{vendor}&Prod_{product}&Rev_{revision}
-      또는 CdRom&Ven_...
-
-    시리얼 번호 앞에 '&' 가 붙으면 OS가 생성한 비고유 식별자 (장치 자체 시리얼 없음).
-    """
     reg = _open_hive(hive_path)
     if not reg:
         return []
@@ -244,15 +209,6 @@ def collect_usbstor(hive_path: str) -> list:
 # ─── Enum\USB 수집 ─────────────────────────────────────────────────────────────
 
 def collect_enum_usb(hive_path: str) -> list:
-    """
-    SYSTEM\\ControlSetXXX\\Enum\\USB 에서 모든 USB 장치 항목 수집.
-
-    VID/PID 키 이름 형식:
-      VID_XXXX&PID_XXXX           (단일 인터페이스 장치)
-      VID_XXXX&PID_XXXX&MI_XX     (복합 인터페이스 장치의 특정 인터페이스)
-
-    주요 활용: USBSTOR 항목의 VID/PID 교차 참조, 비저장 USB 장치(HID, Hub 등) 탐지.
-    """
     reg = _open_hive(hive_path)
     if not reg:
         return []
@@ -318,10 +274,6 @@ def collect_enum_usb(hive_path: str) -> list:
 # ─── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def collect(hive_path: str) -> list:
-    """
-    단일 SYSTEM 하이브 파일에서 USBSTOR + Enum\\USB 항목을 모두 수집합니다.
-    파서(usb_parser.parse)에 넘길 raw 데이터 리스트를 반환합니다.
-    """
     results = []
     results.extend(collect_usbstor(hive_path))
     results.extend(collect_enum_usb(hive_path))
@@ -329,13 +281,6 @@ def collect(hive_path: str) -> list:
 
 
 def collect_from_image(handler, fs) -> list:
-    """
-    pytsk3 파일시스템 객체(fs)에서 SYSTEM 하이브를 찾아 읽고,
-    임시 파일에 기록한 뒤 collect()를 호출합니다.
-
-    ImageHandler.read_file()로 하이브 전체를 메모리에 읽어오므로
-    잠금(locked) 상태인 라이브 시스템 파일도 접근 가능합니다.
-    """
     for hive_path in _SYSTEM_HIVE_CANDIDATES:
         inode = None
         try:

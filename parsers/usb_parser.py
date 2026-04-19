@@ -8,12 +8,6 @@ logger = logging.getLogger(__name__)
 # ─── 내부 유틸리티 ─────────────────────────────────────────────────────────────
 
 def _normalize_serial(serial: str) -> str:
-    """
-    시리얼 번호를 정규화하여 USBSTOR ↔ Enum\\USB 교차 참조 키로 사용.
-
-    Windows는 동일 장치라도 복합 인터페이스(MI_XX)의 경우
-    시리얼 뒤에 '&0', '&1' 등의 접미사를 붙이는 경우가 있으므로 제거.
-    """
     s = (serial or "").strip().upper()
     # '&'로 시작하는 비고유 시리얼은 그대로 유지 (접미사 제거 대상 아님)
     if s.startswith("&"):
@@ -25,13 +19,6 @@ def _normalize_serial(serial: str) -> str:
 
 
 def _build_vid_pid_lookup(usbenum_entries: list) -> dict:
-    """
-    Enum\\USB 항목에서 정규화된 시리얼 → {vendor_id, product_id, vid_pid_string}
-    역참조 테이블을 구성합니다.
-
-    복합 인터페이스 장치(MI_XX)의 경우 여러 항목이 같은 시리얼을 공유하므로
-    MI 없는 항목(기본 인터페이스)을 우선 선택합니다.
-    """
     lookup: dict = {}
     for entry in usbenum_entries:
         if entry.get("source") != "Enum\\USB":
@@ -54,7 +41,6 @@ def _build_vid_pid_lookup(usbenum_entries: list) -> dict:
 
 
 def _pick_best_timestamp(*candidates: Optional[datetime]) -> Optional[datetime]:
-    """여러 타임스탬프 후보 중 None이 아닌 첫 번째 값 반환."""
     for ts in candidates:
         if ts is not None:
             return ts
@@ -62,7 +48,6 @@ def _pick_best_timestamp(*candidates: Optional[datetime]) -> Optional[datetime]:
 
 
 def _sort_key(entry: dict) -> float:
-    """정렬용 숫자 키: last_arrival → first_install → install 순 우선."""
     ts = _pick_best_timestamp(
         entry.get("last_arrival_time"),
         entry.get("first_install_time"),
@@ -76,30 +61,6 @@ def _sort_key(entry: dict) -> float:
 # ─── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def parse(raw_entries: list) -> list:
-    """
-    usb_collector.collect()의 반환값을 받아 정제된 항목 목록을 반환합니다.
-
-    최종 항목 구조 (공통 필드):
-      artifact_source      : "USBSTOR" 또는 "Enum\\USB"
-      device_type          : 장치 유형 ("Disk", "CdRom", "Unknown" 등)
-      vendor               : 제조사 문자열 (USBSTOR의 Ven_ 부분 또는 Mfg 값)
-      product              : 제품명 (USBSTOR의 Prod_ 부분 또는 FriendlyName)
-      revision             : 펌웨어 리비전 (USBSTOR의 Rev_ 부분)
-      serial_number        : 장치 시리얼 번호 (원본)
-      is_unique_serial     : 고유 시리얼 여부 (False면 추적 불가)
-      friendly_name        : Windows가 표시하는 장치 이름
-      device_desc          : 장치 클래스 설명
-      manufacturer         : Mfg 레지스트리 값
-      parent_id_prefix     : MountedDevices 교차 참조 키 (USBSTOR만)
-      hardware_id          : HardwareID 첫 번째 항목 (USBSTOR만)
-      vendor_id            : USB VID (4자리 hex, Enum\\USB에서 가져옴)
-      product_id           : USB PID (4자리 hex, Enum\\USB에서 가져옴)
-      vid_pid_string       : "VID_XXXX&PID_XXXX" 전체 문자열
-      install_time         : 드라이버 최초 설치 일시 (Properties 0064)
-      first_install_time   : 장치 최초 연결 일시 (Properties 0065, Win8+)
-      last_arrival_time    : 마지막 연결 일시 (Properties 0066)
-      last_removal_time    : 마지막 제거 일시 (Properties 0067)
-    """
     if not raw_entries:
         return []
 

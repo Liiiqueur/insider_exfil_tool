@@ -44,16 +44,6 @@ _USER_HOME_ROOTS = [
 # ─── pytsk3 스트리밍 파일 오브젝트 ─────────────────────────────────────────────
 
 class _TskFileObject:
-    """
-    pytsk3 파일 핸들을 pypff.open_file_object()가 요구하는
-    파일류 인터페이스로 감쌉니다.
-
-    pypff가 요구하는 메서드: read(size), seek(offset, whence), tell(), get_size()
-
-    pytsk3의 read_random(offset, length) 기반으로 구현합니다.
-    전체 파일을 메모리에 올리지 않으므로 수 GB PST/OST에도 대응 가능합니다.
-    """
-
     def __init__(self, tsk_file):
         self._file = tsk_file
         meta = tsk_file.info.meta
@@ -92,7 +82,6 @@ class _TskFileObject:
         return self._offset
 
     def get_size(self) -> int:
-        """pypff가 open_file_object() 시 파일 크기 확인에 사용합니다."""
         return self._size
 
     def readable(self) -> bool:
@@ -108,15 +97,6 @@ class _TskFileObject:
 # ─── PFF 헤더 파싱 ─────────────────────────────────────────────────────────────
 
 def _parse_pff_header(data: bytes) -> dict:
-    """
-    PFF 파일의 첫 16 바이트를 읽어 파일 종류와 포맷 버전을 반환합니다.
-
-    반환 딕셔너리:
-      is_pff      : bool - PFF 매직 바이트 일치 여부
-      file_type   : str  - "PST" / "OST" / "PAB" / "Unknown"
-      format      : str  - "ANSI/32-bit" / "Unicode/64-bit" / "Unicode/4K-page"
-      format_ver  : int  - wVer 원본 값
-    """
     result = {"is_pff": False, "file_type": "Unknown", "format": "Unknown", "format_ver": 0}
     if not data or len(data) < 12:
         return result
@@ -134,7 +114,6 @@ def _parse_pff_header(data: bytes) -> dict:
 # ─── 이미지 내 파일 탐색 ────────────────────────────────────────────────────────
 
 def _try_open(fs, path: str):
-    """pytsk3 fs.open()을 시도하고 실패 시 None 반환."""
     try:
         return fs.open(path)
     except Exception:
@@ -142,7 +121,6 @@ def _try_open(fs, path: str):
 
 
 def _try_dir(fs, path: str):
-    """pytsk3 fs.open_dir()을 시도하고 실패 시 None 반환."""
     try:
         return fs.open_dir(path)
     except Exception:
@@ -150,10 +128,6 @@ def _try_dir(fs, path: str):
 
 
 def _scan_dir_for_pst_ost(fs, dir_path: str, username: str, results: list, depth: int = 0):
-    """
-    지정된 디렉토리에서 .pst/.ost 파일을 1단계 깊이로 스캔합니다.
-    depth > 0 이면 재귀 탐색을 중단합니다 (성능 보호).
-    """
     d = _try_dir(fs, dir_path)
     if d is None:
         return
@@ -212,10 +186,6 @@ def _scan_dir_for_pst_ost(fs, dir_path: str, username: str, results: list, depth
 
 
 def _enumerate_users(fs) -> list:
-    """
-    볼륨 내 사용자 홈 디렉토리 목록을 반환합니다.
-    반환 형식: [{"username": "john", "home_path": "/Users/john"}, ...]
-    """
     users = []
     for root in _USER_HOME_ROOTS:
         d = _try_dir(fs, f"/{root}")
@@ -244,14 +214,6 @@ def _enumerate_users(fs) -> list:
 # ─── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def collect_from_image(handler, fs) -> list:
-    """
-    pytsk3 파일시스템 객체(fs)에서 PST/OST 파일을 찾아
-    파서(ost_pst_parser.parse)에 넘길 raw 항목 목록을 반환합니다.
-
-    각 항목은 _TskFileObject를 통해 파일 내용에 스트리밍 접근합니다.
-    pytsk3 파일 핸들이 살아 있어야 하므로 이 함수가 반환한 목록은
-    parse() 호출 전까지 gc되지 않도록 주의하세요 (main_window에서 자동 보장됨).
-    """
     results = []
     users = _enumerate_users(fs)
     if not users:
@@ -272,10 +234,6 @@ def collect_from_image(handler, fs) -> list:
 
 
 def collect(file_path: str) -> list:
-    """
-    로컬 파일 시스템의 PST/OST 파일을 직접 수집합니다 (테스트/라이브 시스템용).
-    collect_from_image()와 동일한 구조의 항목을 반환합니다.
-    """
     results = []
     if not os.path.isfile(file_path):
         return results
@@ -303,11 +261,6 @@ def collect(file_path: str) -> list:
 # ─── 내부 유틸 ──────────────────────────────────────────────────────────────────
 
 def _path_variants(path: str) -> list:
-    """
-    'AppData/Local/Microsoft/Outlook' 같은 경로에 대해
-    첫 글자 대소문자 변형을 생성합니다.
-    (pytsk3는 내부적으로 대소문자 구분하는 경우가 있음)
-    """
     variants = {path}
     parts = path.split("/")
     # 모두 소문자 버전

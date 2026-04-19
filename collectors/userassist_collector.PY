@@ -16,14 +16,6 @@ BASE_KEY = "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\UserAssist"
 # ── NTUSER.DAT 자동 탐색 ──────────────────────────────────────────────────────
 
 def find_ntuser_dat_files(mount_path: str) -> list[str]:
-    """
-    마운트 경로에서 모든 사용자의 NTUSER.DAT 경로를 반환한다.
-
-    탐색 순서:
-      1. {mount_path}\\Users\\*\\NTUSER.DAT          (Windows Vista 이상)
-      2. {mount_path}\\Documents and Settings\\*\\NTUSER.DAT  (XP 이하)
-      3. {mount_path}\\NTUSER.DAT                    (루트 직접 지정 시)
-    """
     # NTUSER.DAT 파일을 직접 넘긴 경우
     if mount_path.lower().endswith("ntuser.dat") and os.path.isfile(mount_path):
         return [mount_path]
@@ -45,7 +37,6 @@ def find_ntuser_dat_files(mount_path: str) -> list[str]:
 # ── 단일 하이브 수집 ──────────────────────────────────────────────────────────
 
 def _collect_from_hive(ntuser_path: str) -> list[dict]:
-    """단일 NTUSER.DAT 파일에서 UserAssist 항목을 수집한다."""
     try:
         from Registry import Registry
     except ImportError:
@@ -97,28 +88,6 @@ def _collect_from_hive(ntuser_path: str) -> list[dict]:
 # ── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def collect(mount_path: str) -> list[dict]:
-    """
-    마운트 경로 안의 모든 사용자 NTUSER.DAT 에서 UserAssist 를 수집한다.
-
-    Parameters
-    ----------
-    mount_path : str
-        마운트된 드라이브 루트 (예: "E:\\") 또는 NTUSER.DAT 직접 경로
-
-    Returns
-    -------
-    list[dict]
-        수집된 raw 항목 목록. 각 항목:
-        {
-            "guid"        : str
-            "guid_type"   : str    – "Executable" | "Shortcut"
-            "name_rot13"  : str    – ROT13 인코딩된 원본 값 이름
-            "raw_data"    : bytes  – REG_BINARY 원시 데이터
-            "username"    : str    – NTUSER.DAT 소유 사용자명
-            "hive_path"   : str    – 원본 하이브 파일 경로
-            "collected_at": str    – ISO 8601 수집 시각
-        }
-    """
     hive_files = find_ntuser_dat_files(mount_path)
 
     if not hive_files:

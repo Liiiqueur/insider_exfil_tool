@@ -293,9 +293,6 @@ def parse_custom(info: dict) -> list[dict]:
 # ── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def parse(collected: list[dict]) -> list[dict]:
-    """
-    collector 결과 전체를 받아 포맷을 자동 판별하고 파싱한다.
-    """
     all_entries = []
     for info in collected:
         try:

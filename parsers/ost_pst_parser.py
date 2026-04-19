@@ -49,10 +49,6 @@ BODY_PREVIEW_LEN = 256
 # ─── 타임스탬프 정규화 ──────────────────────────────────────────────────────────
 
 def _to_utc(value) -> Optional[datetime]:
-    """
-    pypff가 반환하는 datetime을 UTC datetime으로 정규화합니다.
-    pypff는 일반적으로 UTC datetime을 반환하지만 tzinfo가 없는 경우도 있습니다.
-    """
     if value is None:
         return None
     if not isinstance(value, datetime):
@@ -104,20 +100,6 @@ def _parse_transport_headers(headers_str: Optional[str]) -> dict:
 # ─── 수신자 파싱 ───────────────────────────────────────────────────────────────
 
 def _parse_recipients(message) -> dict:
-    """
-    pypff message 객체에서 수신자 목록을 파싱합니다.
-
-    pypff 수신자 타입 값:
-      0 = 알 수 없음 / 발신자
-      1 = To (MAPI_TO)
-      2 = CC (MAPI_CC)
-      3 = BCC (MAPI_BCC)
-
-    반환:
-      to_list  : To 수신자 문자열 목록
-      cc_list  : CC 수신자 문자열 목록
-      bcc_list : BCC 수신자 문자열 목록
-    """
     to_list, cc_list, bcc_list = [], [], []
     try:
         count = message.number_of_recipients
@@ -155,14 +137,6 @@ def _parse_recipients(message) -> dict:
 # ─── 첨부파일 파싱 ─────────────────────────────────────────────────────────────
 
 def _parse_attachments(message) -> list:
-    """
-    첨부파일 메타데이터를 추출합니다 (내용은 읽지 않음 - 성능 보호).
-
-    반환 항목 필드:
-      name : 첨부파일 이름
-      size : 바이트 크기 (없으면 0)
-      ext  : 확장자 소문자 (예: ".pdf")
-    """
     attachments = []
     try:
         count = message.number_of_attachments
@@ -205,10 +179,6 @@ def _parse_attachments(message) -> list:
 # ─── 본문 추출 ─────────────────────────────────────────────────────────────────
 
 def _extract_body_preview(message) -> str:
-    """
-    메시지 본문에서 첫 BODY_PREVIEW_LEN 글자를 추출합니다.
-    plain_text_body 우선, 없으면 html_body에서 태그 제거 후 사용.
-    """
     try:
         body = message.plain_text_body
         if body:
@@ -235,9 +205,6 @@ def _extract_body_preview(message) -> str:
 # ─── 아이템 타입 분류 ──────────────────────────────────────────────────────────
 
 def _classify_item_type(message, folder_name: str) -> str:
-    """
-    메시지 클래스(PR_MESSAGE_CLASS) 또는 폴더 이름으로 항목 종류를 분류합니다.
-    """
     # pypff.message.message_class 또는 get_message_class() 시도
     mc = ""
     for attr in ("message_class", "get_message_class"):
@@ -279,11 +246,6 @@ def _parse_single_message(
     is_deleted: bool,
     deletion_type: Optional[str],
 ) -> Optional[dict]:
-    """
-    pypff.message 객체 하나를 포렌식 항목 딕셔너리로 변환합니다.
-
-    오류 발생 시 None을 반환합니다 (부분 손상 메시지 skip).
-    """
     try:
         # ── 기본 속성 ────────────────────────────────────────────────────────────
         subject = ""
@@ -408,11 +370,6 @@ def _parse_single_message(
 # ─── 폴더 트리 순회 ────────────────────────────────────────────────────────────
 
 def _is_deleted_folder(folder_name: str) -> tuple:
-    """
-    폴더 이름으로 삭제 항목 여부와 삭제 종류를 판단합니다.
-
-    반환: (is_deleted: bool, deletion_type: str|None)
-    """
     lower = folder_name.lower()
     if any(lower == n or lower.startswith(n) for n in _HARD_DELETE_FOLDERS):
         return True, "hard"
@@ -431,11 +388,6 @@ def _walk_folder(
     depth: int = 0,
     max_depth: int = 30,
 ) -> None:
-    """
-    pypff 폴더 객체를 재귀 순회하며 모든 메시지를 파싱합니다.
-
-    depth 제한으로 순환 참조가 있는 손상 파일 처리 시 무한 재귀를 방지합니다.
-    """
     if depth > max_depth:
         logger.debug("최대 폴더 깊이 초과: %s", folder_path)
         return
@@ -506,16 +458,6 @@ def _walk_folder(
 # ─── PST/OST 단일 파일 파싱 ────────────────────────────────────────────────────
 
 def _parse_pff_file(raw_item: dict) -> list:
-    """
-    단일 PST/OST 파일을 pypff로 완전 파싱합니다.
-
-    처리 순서:
-      1. pypff.file() 생성
-      2. open_file_object() 또는 open() 호출
-      3. 루트 폴더부터 재귀 순회 (일반 폴더 + Recoverable Items)
-      4. Orphan 아이템 처리 (libpff 복구 삭제 항목)
-      5. 파일 닫기
-    """
     try:
         import pypff
     except ImportError:
@@ -610,7 +552,6 @@ def _parse_pff_file(raw_item: dict) -> list:
 # ─── 정렬 키 ───────────────────────────────────────────────────────────────────
 
 def _sort_key(entry: dict) -> float:
-    """최근 수신/발신 이메일이 상단에 오도록 내림차순 정렬 키."""
     ts = entry.get("delivery_time") or entry.get("submit_time") or entry.get("creation_time")
     if ts and hasattr(ts, "timestamp"):
         return ts.timestamp()
@@ -620,13 +561,6 @@ def _sort_key(entry: dict) -> float:
 # ─── 공개 인터페이스 ───────────────────────────────────────────────────────────
 
 def parse(raw_items: list) -> list:
-    """
-    ost_pst_collector.collect_from_image()의 반환값을 받아
-    모든 PST/OST 파일에서 메시지 항목을 추출한 정제된 목록을 반환합니다.
-
-    pypff가 설치되지 않은 경우 빈 목록과 오류 로그를 반환합니다.
-    설치 명령어: pip install libpff-python
-    """
     if not raw_items:
         return []
 
