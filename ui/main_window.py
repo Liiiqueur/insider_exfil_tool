@@ -4,8 +4,9 @@ import os
 from datetime import datetime, timezone
 
 from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QColor, QFont, QKeySequence
 from PyQt5.QtWidgets import (
+    QShortcut,
     QAbstractItemView,
     QAction,
     QComboBox,
@@ -144,6 +145,8 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.status.addPermanentWidget(self.font_scale_label)
         self.status.addPermanentWidget(self.font_up_btn)
         self.status.showMessage("Open a forensic image to start.")
+
+        QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
 
     # ── 패널 팩토리 ───────────────────────────────────────
 
@@ -788,6 +791,12 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         worker.finished.connect(
             lambda: self._workers.remove(worker) if worker in self._workers else None
         )
+    def closeEvent(self, event):
+        for worker in list(self._workers):
+            if worker.isRunning():
+                worker.quit()
+                worker.wait(2000)
+        event.accept()
 
     @staticmethod
     def _sanitize_entry(entry: dict) -> dict:
