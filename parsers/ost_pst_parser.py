@@ -1,375 +1,164 @@
+from __future__ import annotations
+
 import email as email_lib
 import email.policy
 import logging
 import os
+import re
 from datetime import datetime, timezone
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# ─── 상수 ──────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────
+# 상수
+# ──────────────────────────────────────────
 
-# 폴더 이름 기반 삭제 항목 분류
-_SOFT_DELETE_FOLDERS = {
-    "deleted items",
-    "deleted messages",
-    "삭제된 항목",
-    "trash",
-    "bin",
-}
+_SOFT_DELETE_FOLDERS = frozenset({
+    "deleted items", "deleted messages", "삭제된 항목", "trash", "bin",
+})
+_HARD_DELETE_FOLDERS = frozenset({
+    "recoverable items", "purges", "deletions",
+    "calendar logging", "audits", "복구 가능한 항목", "purge",
+})
 
-_HARD_DELETE_FOLDERS = {
-    "recoverable items",
-    "purges",
-    "deletions",
-    "calendar logging",
-    "audits",
-    "복구 가능한 항목",
-    "purge",
-}
-
-# 메시지 클래스 접두사 → item_type 분류
-_ITEM_TYPE_MAP = [
-    ("ipm.appointment",  "calendar"),
-    ("ipm.contact",      "contact"),
-    ("ipm.task",         "task"),
-    ("ipm.stickynote",   "note"),
-    ("ipm.activity",     "journal"),
-    ("ipm.note",         "email"),
-    ("ipm.",             "email"),   # 기타 IPM 항목도 이메일로 처리
+# 메시지 클래스 접두사 → item_type (순서 중요: 구체적인 것 먼저)
+_ITEM_TYPE_MAP: list[tuple[str, str]] = [
+    ("ipm.appointment", "calendar"),
+    ("ipm.contact",     "contact"),
+    ("ipm.task",        "task"),
+    ("ipm.stickynote",  "note"),
+    ("ipm.activity",    "journal"),
+    ("ipm.note",        "email"),
+    ("ipm.",            "email"),
 ]
 
-# 한 폴더당 최대 파싱 메시지 수 (대용량 PST 보호)
+# 폴더 이름 키워드 → item_type (message_class 없을 때 휴리스틱)
+_FOLDER_TYPE_HINTS: list[tuple[str, str]] = [
+    ("calendar", "calendar"),
+    ("칼렌더",   "calendar"),
+    ("일정",     "calendar"),
+    ("contact",  "contact"),
+    ("연락처",   "contact"),
+    ("task",     "task"),
+    ("작업",     "task"),
+    ("note",     "note"),
+    ("메모",     "note"),
+]
+
 MAX_MESSAGES_PER_FOLDER = 500
-
-# 본문 미리보기 최대 길이
-BODY_PREVIEW_LEN = 256
+BODY_PREVIEW_LEN        = 256
 
 
-# ─── 타임스탬프 정규화 ──────────────────────────────────────────────────────────
+# ──────────────────────────────────────────
+# 공개 API
+# ──────────────────────────────────────────
 
-def _to_utc(value) -> Optional[datetime]:
-    if value is None:
-        return None
-    if not isinstance(value, datetime):
-        return None
-    if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+def parse(raw_items: list[dict]) -> list[dict]:
+    if not raw_items:
+        return []
+
+    all_entries: list[dict] = []
+    for raw_item in raw_items:
+        all_entries.extend(_parse_pff_file(raw_item))
+
+    all_entries.sort(key=_sort_key, reverse=True)
+
+    logger.info(
+        "OST/PST 전체 파싱 완료: 파일 %d개 → 총 %d개 항목 (삭제 포함 %d개)",
+        len(raw_items),
+        len(all_entries),
+        sum(1 for e in all_entries if e.get("is_deleted")),
+    )
+    return all_entries
 
 
-# ─── 헤더 파싱 ─────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────
+# 내부 — PFF 파일 파싱
+# ──────────────────────────────────────────
 
-def _parse_transport_headers(headers_str: Optional[str]) -> dict:
-    result: dict = {
-        "message_id": "",
-        "x_originating_ip": "",
-        "received_servers": [],
-        "from_header": "",
-        "to_header": "",
-        "cc_header": "",
-        "bcc_header": "",
-        "date_header": "",
-    }
-    if not headers_str:
-        return result
+def _parse_pff_file(raw_item: dict) -> list[dict]:
     try:
-        msg = email_lib.message_from_string(headers_str, policy=email_lib.policy.compat32)
-        result["message_id"]       = (msg.get("Message-ID") or "").strip()
-        result["x_originating_ip"] = (msg.get("X-Originating-IP") or "").strip()
-        result["from_header"]      = (msg.get("From") or "").strip()
-        result["to_header"]        = (msg.get("To") or "").strip()
-        result["cc_header"]        = (msg.get("Cc") or "").strip()
-        result["bcc_header"]       = (msg.get("Bcc") or "").strip()
-        result["date_header"]      = (msg.get("Date") or "").strip()
-        # Received 헤더 여러 개 수집 → 라우팅 경로 재구성
-        received_servers = []
-        for rcv in msg.get_all("Received") or []:
-            # "from mail.example.com by ..." 에서 발신 서버만 추출
-            rcv_line = rcv.strip().split("\n")[0]  # 멀티라인 헤더의 첫 줄
-            if rcv_line.lower().startswith("from "):
-                server = rcv_line.split()[1] if len(rcv_line.split()) > 1 else ""
-                if server:
-                    received_servers.append(server)
-        result["received_servers"] = received_servers
+        import pypff
+    except ImportError:
+        logger.error("pypff 를 찾을 수 없습니다.\n  pip install libpff-python")
+        return []
+
+    pff_file = pypff.file()
+    results: list[dict] = []
+
+    try:
+        _open_pff(pff_file, raw_item)
+        logger.info(
+            "PST/OST 파싱 시작: %s [%s %s %.1f MB]",
+            raw_item["source_path"],
+            raw_item["file_type"],
+            raw_item["format"],
+            raw_item["file_size"] / (1024 * 1024),
+        )
+
+        root = _safe_call(pff_file.get_root_folder)
+        if root:
+            _walk_folder(root, "/", raw_item, results)
+
+        _collect_orphans(pff_file, raw_item, results, pypff)
+
+        logger.info(
+            "PST/OST 파싱 완료: %s → %d 개 항목",
+            raw_item["source_path"], len(results),
+        )
     except Exception as exc:
-        logger.debug("헤더 파싱 오류: %s", exc)
-    return result
+        logger.warning("PST/OST 파일 파싱 실패 [%s]: %s", raw_item.get("source_path"), exc)
+    finally:
+        try:
+            pff_file.close()
+        except Exception:
+            pass
+
+    return results
 
 
-# ─── 수신자 파싱 ───────────────────────────────────────────────────────────────
+def _open_pff(pff_file, raw_item: dict) -> None:
+    file_obj   = raw_item.get("file_object")
+    local_path = raw_item.get("_local_path")
+    if file_obj is not None:
+        pff_file.open_file_object(file_obj)
+    elif local_path and os.path.isfile(local_path):
+        pff_file.open(local_path)
+    else:
+        raise FileNotFoundError(
+            f"열 수 있는 파일 소스가 없음: {raw_item.get('source_path')}"
+        )
 
-def _parse_recipients(message) -> dict:
-    to_list, cc_list, bcc_list = [], [], []
+
+def _collect_orphans(pff_file, raw_item: dict, results: list[dict], pypff) -> None:
     try:
-        count = message.number_of_recipients
-        for i in range(count):
+        orphan_count = pff_file.get_number_of_orphan_items()
+        recovered    = 0
+        for i in range(orphan_count):
             try:
-                recipient = message.get_recipient(i)
-                name  = (recipient.display_name or "").strip()
-                email = (recipient.email_address or "").strip()
-                addr  = f"{name} <{email}>" if name and email else (email or name or "")
-                rtype = getattr(recipient, "type", None)
-                # recipient.type 은 정수; 일부 pypff 빌드는 None을 반환
-                if rtype is None:
-                    # type_string 프로퍼티로 시도
-                    type_str = getattr(recipient, "type_string", "") or ""
-                    rtype_str = type_str.lower()
-                    if "cc" in rtype_str:
-                        rtype = 2
-                    elif "bcc" in rtype_str:
-                        rtype = 3
-                    else:
-                        rtype = 1  # 기본값 To
-                if rtype == 2:
-                    cc_list.append(addr)
-                elif rtype == 3:
-                    bcc_list.append(addr)
-                else:
-                    to_list.append(addr)
+                item = pff_file.get_orphan_item(i)
+                if item is None or not isinstance(item, pypff.message):
+                    continue
+                entry = _parse_single_message(
+                    item, "/Orphan", "Orphan", raw_item,
+                    is_deleted=True, deletion_type="orphan",
+                )
+                if entry:
+                    results.append(entry)
+                    recovered += 1
             except Exception:
                 continue
+        if recovered:
+            logger.info("Orphan 복구 항목: %d 개", recovered)
     except Exception as exc:
-        logger.debug("수신자 파싱 오류: %s", exc)
-    return {"to_list": to_list, "cc_list": cc_list, "bcc_list": bcc_list}
+        logger.debug("Orphan 처리 오류: %s", exc)
 
 
-# ─── 첨부파일 파싱 ─────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────
+# 내부 — 폴더 순회
+# ──────────────────────────────────────────
 
-def _parse_attachments(message) -> list:
-    attachments = []
-    try:
-        count = message.number_of_attachments
-        for i in range(count):
-            try:
-                att = message.get_attachment(i)
-                # 파일명 우선순위: long filename → short name → ""
-                name = ""
-                for attr in ("name", "get_name"):
-                    try:
-                        val = getattr(att, attr)
-                        if callable(val):
-                            val = val()
-                        if val:
-                            name = val.strip()
-                            break
-                    except Exception:
-                        continue
-                size = 0
-                try:
-                    size_attr = getattr(att, "size", None)
-                    if size_attr is not None and not callable(size_attr):
-                        size = int(size_attr)
-                    elif hasattr(att, "get_size"):
-                        size = int(att.get_size())
-                except Exception:
-                    pass
-                attachments.append({
-                    "name": name,
-                    "size": size,
-                    "ext": os.path.splitext(name)[1].lower() if name else "",
-                })
-            except Exception:
-                continue
-    except Exception as exc:
-        logger.debug("첨부파일 파싱 오류: %s", exc)
-    return attachments
-
-
-# ─── 본문 추출 ─────────────────────────────────────────────────────────────────
-
-def _extract_body_preview(message) -> str:
-    try:
-        body = message.plain_text_body
-        if body:
-            if isinstance(body, bytes):
-                body = body.decode("utf-8", errors="replace")
-            return body[:BODY_PREVIEW_LEN].replace("\r\n", " ").replace("\n", " ").strip()
-    except Exception:
-        pass
-    try:
-        html = message.html_body
-        if html:
-            if isinstance(html, bytes):
-                html = html.decode("utf-8", errors="replace")
-            # 단순 태그 제거 (정규식 없이)
-            import re
-            plain = re.sub(r"<[^>]+>", " ", html)
-            plain = re.sub(r"\s+", " ", plain)
-            return plain[:BODY_PREVIEW_LEN].strip()
-    except Exception:
-        pass
-    return ""
-
-
-# ─── 아이템 타입 분류 ──────────────────────────────────────────────────────────
-
-def _classify_item_type(message, folder_name: str) -> str:
-    # pypff.message.message_class 또는 get_message_class() 시도
-    mc = ""
-    for attr in ("message_class", "get_message_class"):
-        try:
-            val = getattr(message, attr, None)
-            if callable(val):
-                val = val()
-            if val:
-                mc = val.lower()
-                break
-        except Exception:
-            pass
-
-    if mc:
-        for prefix, item_type in _ITEM_TYPE_MAP:
-            if mc.startswith(prefix):
-                return item_type
-
-    # 폴더 이름 기반 휴리스틱 분류
-    fname = folder_name.lower()
-    if "calendar" in fname or "칼렌더" in fname or "일정" in fname:
-        return "calendar"
-    if "contact" in fname or "연락처" in fname:
-        return "contact"
-    if "task" in fname or "작업" in fname:
-        return "task"
-    if "note" in fname or "메모" in fname:
-        return "note"
-    return "email"
-
-
-# ─── 단일 메시지 파싱 ──────────────────────────────────────────────────────────
-
-def _parse_single_message(
-    message,
-    folder_path: str,
-    folder_name: str,
-    source_info: dict,
-    is_deleted: bool,
-    deletion_type: Optional[str],
-) -> Optional[dict]:
-    try:
-        # ── 기본 속성 ────────────────────────────────────────────────────────────
-        subject = ""
-        try:
-            subject = message.subject or ""
-        except Exception:
-            pass
-
-        sender_name = ""
-        try:
-            sender_name = message.sender_name or ""
-        except Exception:
-            pass
-
-        # ── 타임스탬프 ───────────────────────────────────────────────────────────
-        delivery_time = None
-        submit_time = None
-        creation_time = None
-        try:
-            delivery_time = _to_utc(message.delivery_time)
-        except Exception:
-            pass
-        try:
-            submit_time = _to_utc(message.client_submit_time)
-        except Exception:
-            pass
-        try:
-            creation_time = _to_utc(message.creation_time)
-        except Exception:
-            pass
-
-        # ── Transport Headers ────────────────────────────────────────────────────
-        headers_str = None
-        try:
-            headers_str = message.transport_headers
-        except Exception:
-            pass
-        hdr = _parse_transport_headers(headers_str)
-
-        # sender_email: 헤더의 From > pypff sender_name 순서
-        sender_email = ""
-        if hdr["from_header"]:
-            # "Display Name <addr@example.com>" 에서 이메일 추출
-            fh = hdr["from_header"]
-            if "<" in fh and ">" in fh:
-                sender_email = fh.split("<")[1].split(">")[0].strip()
-            else:
-                sender_email = fh.strip()
-
-        # ── 수신자 ──────────────────────────────────────────────────────────────
-        rcpts = _parse_recipients(message)
-
-        # To 목록이 비어있고 헤더의 To가 있으면 보완
-        if not rcpts["to_list"] and hdr["to_header"]:
-            rcpts["to_list"] = [a.strip() for a in hdr["to_header"].split(",") if a.strip()]
-        if not rcpts["cc_list"] and hdr["cc_header"]:
-            rcpts["cc_list"] = [a.strip() for a in hdr["cc_header"].split(",") if a.strip()]
-
-        # ── 첨부파일 ─────────────────────────────────────────────────────────────
-        atts = _parse_attachments(message)
-        has_att = len(atts) > 0
-
-        # ── 본문 미리보기 ────────────────────────────────────────────────────────
-        body_preview = _extract_body_preview(message)
-
-        # ── Conversation Index (스레드 식별) ─────────────────────────────────────
-        # Conversation-Index는 22바이트 헤더 + 5바이트 * N 블록
-        # 첫 22바이트 중 바이트 5-21(GUID 포함)이 스레드를 고유하게 식별
-        conv_id = ""
-        try:
-            ci = message.conversation_topic
-            if ci:
-                conv_id = str(ci)
-        except Exception:
-            pass
-
-        # ── 항목 타입 분류 ──────────────────────────────────────────────────────
-        item_type = _classify_item_type(message, folder_name)
-
-        return {
-            # 출처
-            "source_file":       source_info["source_path"],
-            "file_type":         source_info["file_type"],
-            "file_format":       source_info["format"],
-            "username":          source_info["username"],
-            "file_size_bytes":   source_info["file_size"],
-            # 위치
-            "folder_path":       folder_path,
-            "folder_name":       folder_name,
-            # 분류
-            "item_type":         item_type,
-            "is_deleted":        is_deleted,
-            "deletion_type":     deletion_type,
-            # 이메일 필드
-            "subject":           subject,
-            "sender_name":       sender_name,
-            "sender_email":      sender_email,
-            "recipients_to":     "; ".join(rcpts["to_list"]),
-            "recipients_cc":     "; ".join(rcpts["cc_list"]),
-            "recipients_bcc":    "; ".join(rcpts["bcc_list"]),
-            # 타임스탬프
-            "delivery_time":     delivery_time,
-            "submit_time":       submit_time,
-            "creation_time":     creation_time,
-            # 첨부파일
-            "has_attachment":    has_att,
-            "attachment_count":  len(atts),
-            "attachments":       atts,
-            # 헤더 정보
-            "message_id":        hdr["message_id"],
-            "x_originating_ip":  hdr["x_originating_ip"],
-            "received_servers":  hdr["received_servers"],
-            # 기타
-            "conversation_id":   conv_id,
-            "body_preview":      body_preview,
-        }
-    except Exception as exc:
-        logger.debug("메시지 파싱 오류 [%s/%s]: %s", folder_path, subject if "subject" in dir() else "?", exc)
-        return None
-
-
-# ─── 폴더 트리 순회 ────────────────────────────────────────────────────────────
-
-def _is_deleted_folder(folder_name: str) -> tuple:
+def _is_deleted_folder(folder_name: str) -> tuple[bool, str | None]:
     lower = folder_name.lower()
     if any(lower == n or lower.startswith(n) for n in _HARD_DELETE_FOLDERS):
         return True, "hard"
@@ -382,9 +171,9 @@ def _walk_folder(
     folder,
     folder_path: str,
     source_info: dict,
-    results: list,
+    results: list[dict],
     parent_deleted: bool = False,
-    parent_deletion_type: Optional[str] = None,
+    parent_deletion_type: str | None = None,
     depth: int = 0,
     max_depth: int = 30,
 ) -> None:
@@ -392,24 +181,28 @@ def _walk_folder(
         logger.debug("최대 폴더 깊이 초과: %s", folder_path)
         return
 
-    try:
-        folder_name = folder.name or folder_path.rsplit("/", 1)[-1] or "Unknown"
-    except Exception:
-        folder_name = "Unknown"
+    folder_name   = _safe_attr(folder, "name") or folder_path.rsplit("/", 1)[-1] or "Unknown"
+    f_deleted, f_dtype = _is_deleted_folder(folder_name)
+    is_deleted    = parent_deleted or f_deleted
+    deletion_type = parent_deletion_type or f_dtype
 
-    # 삭제 상태 상속 (부모 폴더가 삭제 폴더이면 모든 하위 항목도 deleted)
-    folder_deleted, folder_deletion_type = _is_deleted_folder(folder_name)
-    is_deleted = parent_deleted or folder_deleted
-    deletion_type = parent_deletion_type or folder_deletion_type
+    _process_folder_messages(folder, folder_path, folder_name, source_info, results, is_deleted, deletion_type)
+    _process_sub_folders(folder, folder_path, source_info, results, is_deleted, deletion_type, depth, max_depth)
 
-    # ── 하위 메시지 처리 ────────────────────────────────────────────────────────
-    try:
-        msg_count = folder.number_of_sub_messages
-    except Exception:
-        msg_count = 0
 
-    parsed_count = 0
-    for i in range(min(msg_count, MAX_MESSAGES_PER_FOLDER)):
+def _process_folder_messages(
+    folder,
+    folder_path: str,
+    folder_name: str,
+    source_info: dict,
+    results: list[dict],
+    is_deleted: bool,
+    deletion_type: str | None,
+) -> None:
+    msg_count = _safe_call(lambda: folder.number_of_sub_messages) or 0
+    cap       = min(msg_count, MAX_MESSAGES_PER_FOLDER)
+
+    for i in range(cap):
         try:
             msg = folder.get_sub_message(i)
             if msg is None:
@@ -419,163 +212,314 @@ def _walk_folder(
             )
             if entry:
                 results.append(entry)
-                parsed_count += 1
         except Exception as exc:
             logger.debug("메시지 #%d 오류 [%s]: %s", i, folder_path, exc)
-            continue
 
     if msg_count > MAX_MESSAGES_PER_FOLDER:
         logger.info(
             "폴더 '%s': %d/%d 메시지만 파싱 (MAX_MESSAGES_PER_FOLDER 제한)",
-            folder_path, parsed_count, msg_count
+            folder_path, cap, msg_count,
         )
 
-    # ── 하위 폴더 재귀 처리 ─────────────────────────────────────────────────────
-    try:
-        sub_folder_count = folder.number_of_sub_folders
-    except Exception:
-        sub_folder_count = 0
 
-    for i in range(sub_folder_count):
+def _process_sub_folders(
+    folder,
+    folder_path: str,
+    source_info: dict,
+    results: list[dict],
+    is_deleted: bool,
+    deletion_type: str | None,
+    depth: int,
+    max_depth: int,
+) -> None:
+    sub_count = _safe_call(lambda: folder.number_of_sub_folders) or 0
+    for i in range(sub_count):
         try:
-            sub = folder.get_sub_folder(i)
+            sub      = folder.get_sub_folder(i)
             if sub is None:
                 continue
-            try:
-                sub_name = sub.name or f"folder_{i}"
-            except Exception:
-                sub_name = f"folder_{i}"
-            sub_path = f"{folder_path}/{sub_name}"
+            sub_name = _safe_attr(sub, "name") or f"folder_{i}"
             _walk_folder(
-                sub, sub_path, source_info, results,
-                is_deleted, deletion_type, depth + 1, max_depth
+                sub, f"{folder_path}/{sub_name}", source_info, results,
+                is_deleted, deletion_type, depth + 1, max_depth,
             )
         except Exception as exc:
             logger.debug("하위폴더 #%d 오류 [%s]: %s", i, folder_path, exc)
-            continue
 
 
-# ─── PST/OST 단일 파일 파싱 ────────────────────────────────────────────────────
+# ──────────────────────────────────────────
+# 내부 — 단일 메시지 파싱
+# ──────────────────────────────────────────
 
-def _parse_pff_file(raw_item: dict) -> list:
+def _parse_single_message(
+    message,
+    folder_path: str,
+    folder_name: str,
+    source_info: dict,
+    is_deleted: bool,
+    deletion_type: str | None,
+) -> dict | None:
     try:
-        import pypff
-    except ImportError:
-        logger.error(
-            "pypff를 찾을 수 없습니다. 설치 필요:\n"
-            "  Windows: pip install libpff-python\n"
-            "  Linux:   pip install libpff-python 또는 소스 빌드"
-        )
-        return []
+        subject     = _safe_attr(message, "subject")     or ""
+        sender_name = _safe_attr(message, "sender_name") or ""
 
-    results: list = []
-    pff_file = None
+        delivery_time = _to_utc(_safe_attr(message, "delivery_time"))
+        submit_time   = _to_utc(_safe_attr(message, "client_submit_time"))
+        creation_time = _to_utc(_safe_attr(message, "creation_time"))
 
-    try:
-        pff_file = pypff.file()
+        hdr          = _parse_transport_headers(_safe_attr(message, "transport_headers"))
+        sender_email = _extract_sender_email(hdr["from_header"])
+        rcpts        = _parse_recipients(message)
+        _fill_missing_recipients(rcpts, hdr)
 
-        # 파일 열기: 스트리밍 파일 객체 우선, 없으면 직접 경로 열기
-        file_obj = raw_item.get("file_object")
-        local_path = raw_item.get("_local_path")
+        atts         = _parse_attachments(message)
+        body_preview = _extract_body_preview(message)
+        conv_id      = _safe_attr(message, "conversation_topic") or ""
+        item_type    = _classify_item_type(message, folder_name)
 
-        if file_obj is not None:
-            pff_file.open_file_object(file_obj)
-        elif local_path and os.path.isfile(local_path):
-            pff_file.open(local_path)
-        else:
-            logger.warning("PST/OST: 열 수 있는 파일 소스가 없습니다: %s", raw_item.get("source_path"))
-            return []
-
-        logger.info(
-            "PST/OST 파싱 시작: %s [%s %s %.1f MB]",
-            raw_item["source_path"],
-            raw_item["file_type"],
-            raw_item["format"],
-            raw_item["file_size"] / (1024 * 1024),
-        )
-
-        source_info = raw_item  # 각 메시지 항목에 출처 정보 포함용
-
-        # ── 1. 루트 폴더부터 정상 트리 순회 ────────────────────────────────────
-        try:
-            root = pff_file.get_root_folder()
-            if root:
-                _walk_folder(root, "/", source_info, results)
-        except Exception as exc:
-            logger.warning("루트 폴더 접근 오류 [%s]: %s", raw_item["source_path"], exc)
-
-        # ── 2. Orphan 아이템 처리 (libpff 복구 삭제 항목) ───────────────────────
-        # libpff는 NDB 레이어에서 참조 없는 노드를 복구하여 orphan_items에 제공합니다.
-        # 이는 사용자가 Recoverable Items도 비워서 Outlook에서는 보이지 않는 항목들입니다.
-        try:
-            orphan_count = pff_file.get_number_of_orphan_items()
-            recovered = 0
-            for i in range(orphan_count):
-                try:
-                    item = pff_file.get_orphan_item(i)
-                    if item is None:
-                        continue
-                    # orphan_item이 message 타입인지 확인
-                    if not isinstance(item, pypff.message):
-                        continue
-                    entry = _parse_single_message(
-                        item, "/Orphan", "Orphan", source_info,
-                        is_deleted=True, deletion_type="orphan"
-                    )
-                    if entry:
-                        results.append(entry)
-                        recovered += 1
-                except Exception:
-                    continue
-            if recovered:
-                logger.info("Orphan 복구 항목: %d개", recovered)
-        except Exception as exc:
-            logger.debug("Orphan 처리 오류: %s", exc)
-
-        logger.info(
-            "PST/OST 파싱 완료: %s → %d개 항목",
-            raw_item["source_path"], len(results)
-        )
-
+        return {
+            "source_file":      source_info["source_path"],
+            "file_type":        source_info["file_type"],
+            "file_format":      source_info["format"],
+            "username":         source_info["username"],
+            "file_size_bytes":  source_info["file_size"],
+            "folder_path":      folder_path,
+            "folder_name":      folder_name,
+            "item_type":        item_type,
+            "is_deleted":       is_deleted,
+            "deletion_type":    deletion_type,
+            "subject":          subject,
+            "sender_name":      sender_name,
+            "sender_email":     sender_email,
+            "recipients_to":    "; ".join(rcpts["to_list"]),
+            "recipients_cc":    "; ".join(rcpts["cc_list"]),
+            "recipients_bcc":   "; ".join(rcpts["bcc_list"]),
+            "delivery_time":    delivery_time,
+            "submit_time":      submit_time,
+            "creation_time":    creation_time,
+            "has_attachment":   bool(atts),
+            "attachment_count": len(atts),
+            "attachments":      atts,
+            "message_id":       hdr["message_id"],
+            "x_originating_ip": hdr["x_originating_ip"],
+            "received_servers": hdr["received_servers"],
+            "conversation_id":  str(conv_id) if conv_id else "",
+            "body_preview":     body_preview,
+        }
     except Exception as exc:
-        logger.warning("PST/OST 파일 파싱 실패 [%s]: %s", raw_item.get("source_path"), exc)
-    finally:
-        if pff_file:
+        logger.debug("메시지 파싱 오류 [%s]: %s", folder_path, exc)
+        return None
+
+
+# ──────────────────────────────────────────
+# 내부 — 헤더 파싱
+# ──────────────────────────────────────────
+
+def _parse_transport_headers(headers_str: str | None) -> dict:
+    result: dict = {
+        "message_id": "", "x_originating_ip": "", "received_servers": [],
+        "from_header": "", "to_header": "", "cc_header": "", "bcc_header": "", "date_header": "",
+    }
+    if not headers_str:
+        return result
+    try:
+        msg = email_lib.message_from_string(headers_str, policy=email_lib.policy.compat32)
+        for mail_field, key in (
+            ("Message-ID",       "message_id"),
+            ("X-Originating-IP", "x_originating_ip"),
+            ("From",             "from_header"),
+            ("To",               "to_header"),
+            ("Cc",               "cc_header"),
+            ("Bcc",              "bcc_header"),
+            ("Date",             "date_header"),
+        ):
+            result[key] = (msg.get(mail_field) or "").strip()
+
+        result["received_servers"] = [
+            parts[1]
+            for rcv in (msg.get_all("Received") or [])
+            if len(parts := rcv.strip().split("\n")[0].split()) > 1
+            and parts[0].lower() == "from"
+        ]
+    except Exception as exc:
+        logger.debug("헤더 파싱 오류: %s", exc)
+    return result
+
+
+def _extract_sender_email(from_header: str) -> str:
+    if not from_header:
+        return ""
+    if "<" in from_header and ">" in from_header:
+        return from_header.split("<")[1].split(">")[0].strip()
+    return from_header.strip()
+
+
+def _fill_missing_recipients(rcpts: dict, hdr: dict) -> None:
+    if not rcpts["to_list"] and hdr["to_header"]:
+        rcpts["to_list"] = [a.strip() for a in hdr["to_header"].split(",") if a.strip()]
+    if not rcpts["cc_list"] and hdr["cc_header"]:
+        rcpts["cc_list"] = [a.strip() for a in hdr["cc_header"].split(",") if a.strip()]
+
+
+# ──────────────────────────────────────────
+# 내부 — 수신자 파싱
+# ──────────────────────────────────────────
+
+def _parse_recipients(message) -> dict:
+    to_list, cc_list, bcc_list = [], [], []
+    try:
+        for i in range(message.number_of_recipients):
             try:
-                pff_file.close()
+                recipient = message.get_recipient(i)
+                addr      = _format_address(recipient)
+                rtype     = _recipient_type(recipient)
+                if   rtype == 2: cc_list.append(addr)
+                elif rtype == 3: bcc_list.append(addr)
+                else:            to_list.append(addr)
             except Exception:
-                pass
+                continue
+    except Exception as exc:
+        logger.debug("수신자 파싱 오류: %s", exc)
+    return {"to_list": to_list, "cc_list": cc_list, "bcc_list": bcc_list}
 
-    return results
+
+def _format_address(recipient) -> str:
+    name  = (_safe_attr(recipient, "display_name")  or "").strip()
+    email = (_safe_attr(recipient, "email_address") or "").strip()
+    return f"{name} <{email}>" if name and email else email or name or ""
 
 
-# ─── 정렬 키 ───────────────────────────────────────────────────────────────────
+def _recipient_type(recipient) -> int:
+    rtype = _safe_attr(recipient, "type")
+    if isinstance(rtype, int):
+        return rtype
+    type_str = (_safe_attr(recipient, "type_string") or "").lower()
+    if "cc"  in type_str: return 2
+    if "bcc" in type_str: return 3
+    return 1
+
+
+# ──────────────────────────────────────────
+# 내부 — 첨부파일 파싱
+# ──────────────────────────────────────────
+
+def _parse_attachments(message) -> list[dict]:
+    attachments: list[dict] = []
+    try:
+        for i in range(message.number_of_attachments):
+            try:
+                att  = message.get_attachment(i)
+                name = _get_attachment_name(att)
+                size = _get_attachment_size(att)
+                attachments.append({
+                    "name": name,
+                    "size": size,
+                    "ext":  os.path.splitext(name)[1].lower() if name else "",
+                })
+            except Exception:
+                continue
+    except Exception as exc:
+        logger.debug("첨부파일 파싱 오류: %s", exc)
+    return attachments
+
+
+def _get_attachment_name(att) -> str:
+    for attr in ("name", "get_name"):
+        try:
+            val = getattr(att, attr)
+            if callable(val): val = val()
+            if val: return val.strip()
+        except Exception:
+            continue
+    return ""
+
+
+def _get_attachment_size(att) -> int:
+    try:
+        size_attr = getattr(att, "size", None)
+        if size_attr is not None and not callable(size_attr):
+            return int(size_attr)
+        if hasattr(att, "get_size"):
+            return int(att.get_size())
+    except Exception:
+        pass
+    return 0
+
+
+# ──────────────────────────────────────────
+# 내부 — 본문·분류
+# ──────────────────────────────────────────
+
+def _extract_body_preview(message) -> str:
+    body = _safe_attr(message, "plain_text_body")
+    if body:
+        if isinstance(body, bytes):
+            body = body.decode("utf-8", errors="replace")
+        return body[:BODY_PREVIEW_LEN].replace("\r\n", " ").replace("\n", " ").strip()
+
+    html = _safe_attr(message, "html_body")
+    if html:
+        if isinstance(html, bytes):
+            html = html.decode("utf-8", errors="replace")
+        plain = re.sub(r"<[^>]+>", " ", html)
+        plain = re.sub(r"\s+",     " ", plain)
+        return plain[:BODY_PREVIEW_LEN].strip()
+
+    return ""
+
+
+def _classify_item_type(message, folder_name: str) -> str:
+    mc = ""
+    for attr in ("message_class", "get_message_class"):
+        try:
+            val = getattr(message, attr, None)
+            if callable(val): val = val()
+            if val:
+                mc = val.lower()
+                break
+        except Exception:
+            pass
+
+    if mc:
+        for prefix, item_type in _ITEM_TYPE_MAP:
+            if mc.startswith(prefix):
+                return item_type
+
+    fname = folder_name.lower()
+    for keyword, item_type in _FOLDER_TYPE_HINTS:
+        if keyword in fname:
+            return item_type
+
+    return "email"
+
+
+# ──────────────────────────────────────────
+# 내부 — 공통 유틸
+# ──────────────────────────────────────────
+
+def _safe_attr(obj, attr: str, default=None):
+    try:
+        return getattr(obj, attr, default)
+    except Exception:
+        return default
+
+
+def _safe_call(fn, default=None):
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+def _to_utc(value) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+
 
 def _sort_key(entry: dict) -> float:
-    ts = entry.get("delivery_time") or entry.get("submit_time") or entry.get("creation_time")
-    if ts and hasattr(ts, "timestamp"):
-        return ts.timestamp()
+    for field in ("delivery_time", "submit_time", "creation_time"):
+        ts = entry.get(field)
+        if ts is not None and hasattr(ts, "timestamp"):
+            return ts.timestamp()
     return 0.0
-
-
-# ─── 공개 인터페이스 ───────────────────────────────────────────────────────────
-
-def parse(raw_items: list) -> list:
-    if not raw_items:
-        return []
-
-    all_entries: list = []
-    for raw_item in raw_items:
-        entries = _parse_pff_file(raw_item)
-        all_entries.extend(entries)
-
-    # delivery_time 내림차순 정렬 (가장 최근 이메일 최상단)
-    all_entries.sort(key=_sort_key, reverse=True)
-
-    logger.info(
-        "OST/PST 전체 파싱 완료: 파일 %d개 → 총 %d개 항목 (삭제 포함 %d개)",
-        len(raw_items),
-        len(all_entries),
-        sum(1 for e in all_entries if e.get("is_deleted")),
-    )
-    return all_entries
