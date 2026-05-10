@@ -8,6 +8,14 @@ from datetime import datetime, timezone
 
 def get_columns(aid: str) -> list[tuple[str, str]]:
     _MAP: dict[str, list[tuple[str, str]]] = {
+        "timeline": [
+            ("timestamp", "Timestamp"),
+            ("artifact_type", "Artifact"),
+            ("action", "Action"),
+            ("target", "Target"),
+            ("source", "Source"),
+            ("summary", "Summary"),
+        ],
         "filesystem": [
             ("artifact",       "Artifact"),
             ("path",           "Path"),
@@ -137,6 +145,16 @@ def get_row(
     fmt_size,   # callable: (size) -> str
     fmt_dt,     # callable: (datetime | None) -> str
 ) -> dict:
+    if aid == "timeline":
+        return {
+            "timestamp": fmt_dt(entry.get("timestamp")),
+            "artifact_type": entry.get("artifact_type", ""),
+            "action": entry.get("action", ""),
+            "target": entry.get("target", ""),
+            "source": entry.get("source", ""),
+            "summary": entry.get("summary", ""),
+        }
+
     if aid == "filesystem":
         if (
             entry.get("artifact_name") == "$MFT"
@@ -308,6 +326,7 @@ def get_row(
 
 # 날짜 필드로 취급하는 키 집합
 _TIMESTAMP_KEYS = frozenset({
+    "timestamp",
     "created_time", "modified_time", "accessed_time", "changed_time",
     "install_time", "first_install_time", "last_arrival_time",
     "last_removal_time", "delivery_time", "submit_time", "creation_time",
@@ -334,8 +353,30 @@ _DOC_EXTS = frozenset({
     ".pdf", ".hwp", ".hwpx", ".txt", ".csv",
 })
 
+_TIMELINE_FILTER_ARTIFACTS: dict[str, set[str]] = {
+    "File Activity": {"filesystem", "lnk", "jumplist", "recentdocs", "shellbags"},
+    "Web Activity": {"browser_artifacts"},
+    "USB Activity": {"usb", "mounteddevices"},
+    "Mail Activity": {"ost_pst"},
+    "Execution Activity": {"userassist", "prefetch", "amcache"},
+}
+
 
 def apply_filter(aid: str, entries: list[dict], filter_text: str) -> list[dict]:
+    if filter_text == "All":
+        return entries
+
+    if aid == "timeline":
+        allowed_artifacts = _TIMELINE_FILTER_ARTIFACTS.get(filter_text)
+        if not allowed_artifacts:
+            return entries
+        return [
+            entry for entry in entries
+            if entry.get("artifact_type") in allowed_artifacts
+        ]
+
+    if aid != "filesystem":
+        return entries
     if aid != "filesystem" or filter_text == "전체":
         return entries
 
@@ -375,6 +416,55 @@ def apply_filter(aid: str, entries: list[dict], filter_text: str) -> list[dict]:
 # ──────────────────────────────────────────
 # 내보내기(텍스트)
 # ──────────────────────────────────────────
+
+def apply_filter(aid: str, entries: list[dict], filter_text: str) -> list[dict]:
+    if filter_text == "All":
+        return entries
+
+    if aid == "timeline":
+        allowed_artifacts = _TIMELINE_FILTER_ARTIFACTS.get(filter_text)
+        if not allowed_artifacts:
+            return entries
+        return [
+            entry for entry in entries
+            if entry.get("artifact_type") in allowed_artifacts
+        ]
+
+    if aid != "filesystem":
+        return entries
+
+    cutoff = datetime.now(timezone.utc).timestamp() - 86_400
+    filtered: list[dict] = []
+
+    for entry in entries:
+        if (
+            entry.get("artifact_name") != "$MFT"
+            or entry.get("record_type") != "filesystem_record"
+        ):
+            continue
+
+        path = (entry.get("source_path") or "").lower()
+
+        if filter_text == "Recycle Bin Only":
+            if "/$recycle.bin/" in path:
+                filtered.append(entry)
+
+        elif filter_text == "Document Extensions Only":
+            if os.path.splitext(path)[1] in _DOC_EXTS:
+                filtered.append(entry)
+
+        elif filter_text == "Recent 24 Hours":
+            timestamps = [
+                entry.get("created_time"),
+                entry.get("modified_time"),
+                entry.get("accessed_time"),
+                entry.get("changed_time"),
+            ]
+            if any(ts and ts.timestamp() >= cutoff for ts in timestamps):
+                filtered.append(entry)
+
+    return filtered
+
 
 def export_text(
     aid: str,

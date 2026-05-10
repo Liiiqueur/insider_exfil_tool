@@ -6,6 +6,8 @@ import struct
 from datetime import datetime, timezone
 from typing import NamedTuple
 
+from parsers.timeline_event import build_timeline_event, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
@@ -198,3 +200,26 @@ def _filetime_to_dt(filetime: int) -> datetime | None:
         )
     except (OSError, OverflowError, ValueError):
         return None
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    for entry in entries:
+        run_times = entry.get("all_run_times") or []
+        for timestamp in run_times:
+            if not timestamp:
+                continue
+            target = entry.get("executable") or entry.get("file_name") or ""
+            timeline.append(build_timeline_event(
+                timestamp=timestamp,
+                artifact_type="prefetch",
+                action="program_execution",
+                target=target,
+                source="Prefetch",
+                detail={
+                    "run_count": entry.get("run_count"),
+                    "source_path": entry.get("source_path"),
+                    "version": entry.get("version"),
+                },
+            ))
+    return sort_timeline(timeline)

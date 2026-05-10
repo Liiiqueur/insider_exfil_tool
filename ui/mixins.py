@@ -106,6 +106,8 @@ class StyleMixin:
         self.hex_view.setFont(QFont(mono, self._scaled_pt(10)))
         self.text_view.setFont(QFont(mono, self._scaled_pt(10)))
         self.meta_view.setFont(QFont(mono, self._scaled_pt(10)))
+        if hasattr(self, "preview_view"):
+            self.preview_view.setFont(QFont(mono, self._scaled_pt(10)))
         self.result_overview.setFont(QFont(mono, self._scaled_pt(10)))
         self.result_raw.setFont(QFont(mono, self._scaled_pt(9)))
         self.result_parsed_table.setFont(QFont(mono, self._scaled_pt(9)))
@@ -153,6 +155,13 @@ class StyleMixin:
                 font-weight: bold;
                 font-size: {max(s(base - 1), 8)}pt;
                 padding-left: 8px;
+                border-bottom: 1px solid {C_BORDER};
+            }}
+            QLabel#path_bar {{
+                background: {C_PANEL};
+                color: {C_SUBTEXT};
+                font-size: {max(s(base - 1), 8)}pt;
+                padding-left: 10px;
                 border-bottom: 1px solid {C_BORDER};
             }}
             QLabel#log_header {{
@@ -228,6 +237,7 @@ class StyleMixin:
             QPushButton#font_scale_btn:hover   {{ color: {C_BLUE}; }}
             QPushButton#font_scale_btn:pressed  {{ color: #1d4ed8; }}
             QPushButton#font_scale_btn:disabled {{ color: {C_SUBTEXT}; }}
+            QTabWidget#main_pages::pane,
             QTabWidget#viewer_tabs::pane,
             QTabWidget#result_tabs::pane {{
                 border: 1px solid {C_BORDER};

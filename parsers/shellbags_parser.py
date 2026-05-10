@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timezone
 
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import build_timeline_event, sort_timeline
 
 try:
     from Registry import Registry
@@ -60,4 +61,23 @@ def parse(collected: list[dict]) -> list[dict]:
 
 
 def parse_to_timeline(entries: list[dict]) -> list[dict]:
-    return [{"timestamp": entry["last_written_time"], "event_type": "folder_access", "source": "Shellbags", "description": f"Folder access trace: {entry.get('shell_path')}", "detail": {"username": entry.get("username"), "registry_key": entry.get("registry_key")}} for entry in entries if entry.get("last_written_time")]
+    timeline = []
+    for entry in entries:
+        timestamp = entry.get("last_written_time")
+        if not timestamp:
+            continue
+        target = entry.get("shell_path") or entry.get("item_name") or ""
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="shellbags",
+            action="folder_access",
+            target=target,
+            source="Shellbags",
+            summary=f"Folder access trace: {target}",
+            detail={
+                "username": entry.get("username"),
+                "registry_key": entry.get("registry_key"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)

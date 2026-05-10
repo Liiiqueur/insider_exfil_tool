@@ -2,6 +2,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
 
 
 def _chromium_ts(value):
@@ -80,8 +81,29 @@ def parse(collected: list[dict]) -> list[dict]:
 
 def parse_to_timeline(entries: list[dict]) -> list[dict]:
     timeline = []
+    action_map = {
+        "history": "web_visit",
+        "download": "file_download",
+        "cookie": "cookie_access",
+    }
     for entry in entries:
-        if not entry.get("timestamp"):
+        timestamp = entry.get("timestamp")
+        if not timestamp:
             continue
-        timeline.append({"timestamp": entry["timestamp"], "event_type": f"browser_{entry.get('artifact_type')}", "source": entry.get("browser"), "description": entry.get("url") or entry.get("host") or entry.get("download_path"), "detail": {"profile": entry.get("profile"), "artifact_type": entry.get("artifact_type")}})
-    return timeline
+        subtype = entry.get("artifact_type", "")
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="browser_artifacts",
+            action=action_map.get(subtype, "browser_activity"),
+            target=make_target(entry.get("url"), entry.get("host"), entry.get("download_path")),
+            source=entry.get("browser", "Browser"),
+            summary=make_target(entry.get("title"), entry.get("cookie_name")),
+            detail={
+                "browser_artifact_type": subtype,
+                "profile": entry.get("profile"),
+                "username": entry.get("username"),
+                "download_path": entry.get("download_path"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)

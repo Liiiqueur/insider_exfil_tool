@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
@@ -43,6 +45,44 @@ def parse(raw_entries: list[dict]) -> list[dict]:
         len(parsed),
     )
     return parsed
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    timestamp_actions = (
+        ("first_install_time", "device_first_install", "First installed"),
+        ("install_time", "device_install", "Installed"),
+        ("last_arrival_time", "device_connected", "Connected"),
+        ("last_removal_time", "device_removed", "Removed"),
+    )
+    for entry in entries:
+        target = make_target(
+            entry.get("friendly_name"),
+            entry.get("product"),
+            entry.get("serial_number"),
+            entry.get("vid_pid_string"),
+        )
+        for field_name, action, label in timestamp_actions:
+            timestamp = entry.get(field_name)
+            if not timestamp:
+                continue
+            timeline.append(build_timeline_event(
+                timestamp=timestamp,
+                artifact_type="usb",
+                action=action,
+                target=target,
+                source=entry.get("artifact_source", "USB"),
+                summary=f"{label}: {target}",
+                detail={
+                    "vendor": entry.get("vendor"),
+                    "product": entry.get("product"),
+                    "serial_number": entry.get("serial_number"),
+                    "vendor_id": entry.get("vendor_id"),
+                    "product_id": entry.get("product_id"),
+                    "is_unique_serial": entry.get("is_unique_serial"),
+                },
+            ))
+    return sort_timeline(timeline)
 
 
 # ──────────────────────────────────────────
