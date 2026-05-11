@@ -1,6 +1,5 @@
 from PyQt5.QtCore import QThread, pyqtSignal
-
-from .constants import ARTIFACT_RUNNERS
+from .constants import ARTIFACT_RUNNERS, build_timeline_entries
 from image_handler import ImageHandler
 
 
@@ -51,10 +50,11 @@ class ArtifactWorker(QThread):
     log_msg = pyqtSignal(str)
     error   = pyqtSignal(str)
 
-    def __init__(self, artifact_id: str, handler: ImageHandler):
+    def __init__(self, artifact_id: str, handler: ImageHandler, artifact_cache=None):
         super().__init__()
         self.artifact_id = artifact_id
         self.handler     = handler
+        self.artifact_cache = artifact_cache or {}
 
     def run(self):
         runner = ARTIFACT_RUNNERS.get(self.artifact_id)
@@ -62,7 +62,10 @@ class ArtifactWorker(QThread):
             self.error.emit(f"[ERROR] unsupported artifact: {self.artifact_id}")
             return
         try:
-            entries = runner(self.handler, self.log_msg.emit)
+            if self.artifact_id == "timeline":
+                entries = build_timeline_entries(self.handler, self.log_msg.emit, self.artifact_cache)
+            else:
+                entries = runner(self.handler, self.log_msg.emit)
             self.log_msg.emit(f"[INFO] {self.artifact_id} parsed: {len(entries)} entries")
             self.done.emit(self.artifact_id, entries)
         except Exception as exc:

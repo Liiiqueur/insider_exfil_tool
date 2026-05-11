@@ -4,6 +4,8 @@ import logging
 import struct
 from datetime import datetime, timedelta, timezone
 
+from parsers.timeline_event import build_timeline_event, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
@@ -112,3 +114,25 @@ def _filetime_to_dt(filetime: int) -> datetime | None:
         )
     except (OverflowError, OSError, ValueError):
         return None
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    for entry in entries:
+        timestamp = entry.get("timestamp")
+        if not timestamp:
+            continue
+        target = entry.get("document_name") or entry.get("file_name") or ""
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="spool",
+            action="print_job_created",
+            target=target,
+            source="Print Spool",
+            detail={
+                "job_id": entry.get("job_id"),
+                "user": entry.get("user"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from parsers.artifact_weights import attach_artifact_weight
 from parsers.jumplist_parser import parse_lnk
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
 
 
 def parse(collected: list[dict]) -> list[dict]:
@@ -26,11 +27,18 @@ def parse_to_timeline(entries: list[dict]) -> list[dict]:
         ts = entry.get("access_time") or entry.get("write_time") or entry.get("creation_time")
         if not ts:
             continue
-        timeline.append({
-            "timestamp": ts,
-            "event_type": "lnk",
-            "source": "LNK",
-            "description": f"Shortcut target: {entry.get('target_path') or entry.get('name') or entry.get('source_path')}",
-            "detail": {"username": entry.get("username"), "lnk_location": entry.get("lnk_location"), "source_path": entry.get("source_path")},
-        })
-    return timeline
+        target = make_target(entry.get("target_path"), entry.get("name"), entry.get("source_path"))
+        timeline.append(build_timeline_event(
+            timestamp=ts,
+            artifact_type="lnk",
+            action="shortcut_access",
+            target=target,
+            source="LNK",
+            summary=f"Shortcut target: {target}",
+            detail={
+                "username": entry.get("username"),
+                "lnk_location": entry.get("lnk_location"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)

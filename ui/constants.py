@@ -1,6 +1,8 @@
 import os
 import sys
 import tempfile
+from datetime import datetime, timezone
+from typing import Optional
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -39,6 +41,7 @@ from parsers import (
     ost_pst_parser,
 )
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import normalize_timestamp
 
 # ──────────────────────────────────────────
 # 색상 팔레트
@@ -60,6 +63,7 @@ C_PURPLE  = "#7c3aed"
 # 아티팩트 레지스트리
 # ──────────────────────────────────────────
 ARTIFACT_REGISTRY = [
+    {"id": "timeline",         "label": "Integrated Timeline","description": "Collects timeline events from all supported artifacts and merges them into one time-ordered view",                              "color": C_RED},
     {"id": "filesystem",       "label": "$MFT, $J",         "description": "NTFS metadata reconstructed from $MFT plus raw $J collection",                                                                  "color": C_AMBER},
     {"id": "lnk",             "label": "LNK",              "description": "Shortcut files from Recent, Desktop, and Start Menu",                                                                              "color": C_PURPLE},
     {"id": "eventlog",        "label": "Event Log",        "description": "Security and device event logs related to file access, process creation, logon, and USB activity",                                "color": C_RED},
@@ -139,10 +143,57 @@ def _run_module(handler: ImageHandler, log_cb, collector_module, parser_module) 
         _cleanup_entries(collected)
 
 
+def build_timeline_entries(handler: ImageHandler, log_cb, artifact_cache: Optional[dict] = None) -> list[dict]:
+    timeline_entries: list[dict] = []
+    artifact_cache = artifact_cache or {}
+    for artifact_id, parser_module in TIMELINE_PARSERS.items():
+        try:
+            parsed_entries = artifact_cache.get(artifact_id)
+            if parsed_entries is None:
+                runner = ARTIFACT_RUNNERS.get(artifact_id)
+                if runner is None:
+                    continue
+                log_cb(f"[INFO] building timeline from {artifact_id}")
+                parsed_entries = runner(handler, log_cb)
+            else:
+                log_cb(f"[INFO] using cached {artifact_id}")
+            timeline_entries.extend(parser_module.parse_to_timeline(parsed_entries))
+        except Exception as exc:
+            log_cb(f"[ERROR] timeline build failed for {artifact_id}: {exc}")
+    timeline_entries.sort(
+        key=lambda item: normalize_timestamp(item.get("timestamp")) if item.get("timestamp") else datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return timeline_entries
+
+
+def _run_timeline(handler: ImageHandler, log_cb) -> list[dict]:
+    return build_timeline_entries(handler, log_cb)
+
+
+TIMELINE_PARSERS: dict = {
+    "filesystem": filesystem_parser,
+    "lnk": lnk_parser,
+    "eventlog": eventlog_parser,
+    "recentdocs": recentdocs_parser,
+    "browser_artifacts": browser_artifacts_parser,
+    "userassist": userassist_parser,
+    "jumplist": jumplist_parser,
+    "shellbags": shellbags_parser,
+    "mounteddevices": mounteddevices_parser,
+    "usb": usb_parser,
+    "spool": spool_parser,
+    "prefetch": prefetch_parser,
+    "amcache": amcache_parser,
+    "ost_pst": ost_pst_parser,
+}
+
+
 # ──────────────────────────────────────────
 # 아티팩트 ID → 러너 함수 매핑
 # ──────────────────────────────────────────
 ARTIFACT_RUNNERS: dict = {
+    "timeline":         lambda h, cb: _run_timeline(h, cb),
     "filesystem":       lambda h, cb: _run_module(h, cb, filesystem_collector,        filesystem_parser),
     "lnk":             lambda h, cb: _run_module(h, cb, lnk_collector,               lnk_parser),
     "eventlog":        lambda h, cb: _run_module(h, cb, eventlog_collector,           eventlog_parser),

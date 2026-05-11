@@ -3,6 +3,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -311,7 +313,7 @@ def parse(collected: list[dict]) -> list[dict]:
     return all_entries
 
 
-def parse_to_timeline(entries: list[dict]) -> list[dict]:
+def _legacy_parse_to_timeline_unused(entries: list[dict]) -> list[dict]:
     timeline = []
     for e in entries:
         ts = e.get("access_time")
@@ -334,3 +336,30 @@ def parse_to_timeline(entries: list[dict]) -> list[dict]:
         })
     timeline.sort(key=lambda x: x["timestamp"], reverse=True)
     return timeline
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    for entry in entries:
+        timestamp = entry.get("access_time")
+        if not timestamp:
+            continue
+        target = make_target(entry.get("target_path"), entry.get("name"), "?")
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="jumplist",
+            action="file_access",
+            target=target,
+            source=f"Jumplist ({entry['jl_type']})",
+            summary=f"File access: {target}",
+            detail={
+                "appname": entry.get("appname"),
+                "appid": entry.get("appid"),
+                "username": entry.get("username"),
+                "category": entry.get("category"),
+                "access_count": entry.get("access_count"),
+                "pin_status": entry.get("pin_status"),
+                "arguments": entry.get("arguments"),
+            },
+        ))
+    return sort_timeline(timeline)

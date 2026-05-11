@@ -1,6 +1,7 @@
 import binascii
 
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
 
 try:
     from Registry import Registry
@@ -43,4 +44,22 @@ def parse(collected: list[dict]) -> list[dict]:
 
 
 def parse_to_timeline(entries: list[dict]) -> list[dict]:
-    return []
+    timeline = []
+    for entry in entries:
+        timestamp = entry.get("last_written_time")
+        if not timestamp:
+            continue
+        target = make_target(entry.get("value_name"), entry.get("decoded_data"))
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="mounteddevices",
+            action="drive_mapping_update",
+            target=target,
+            source="MountedDevices",
+            detail={
+                "mapping_type": entry.get("mapping_type"),
+                "decoded_data": entry.get("decoded_data"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)

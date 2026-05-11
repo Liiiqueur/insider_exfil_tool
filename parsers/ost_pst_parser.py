@@ -7,6 +7,8 @@ import os
 import re
 from datetime import datetime, timezone
 
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────
@@ -70,6 +72,49 @@ def parse(raw_items: list[dict]) -> list[dict]:
         sum(1 for e in all_entries if e.get("is_deleted")),
     )
     return all_entries
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    for entry in entries:
+        timestamp, action = _select_timeline_timestamp_and_action(entry)
+        if not timestamp:
+            continue
+
+        item_type = entry.get("item_type") or "email"
+        target = _timeline_target(entry)
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="ost_pst",
+            action=action,
+            target=target,
+            source="Outlook PST/OST",
+            summary=_timeline_summary(action, target, item_type),
+            detail={
+                "item_type": item_type,
+                "folder_path": entry.get("folder_path"),
+                "folder_name": entry.get("folder_name"),
+                "username": entry.get("username"),
+                "sender_name": entry.get("sender_name"),
+                "sender_email": entry.get("sender_email"),
+                "recipients_to": entry.get("recipients_to"),
+                "recipients_cc": entry.get("recipients_cc"),
+                "recipients_bcc": entry.get("recipients_bcc"),
+                "has_attachment": entry.get("has_attachment"),
+                "attachment_count": entry.get("attachment_count"),
+                "attachments": entry.get("attachments", []),
+                "is_deleted": entry.get("is_deleted"),
+                "deletion_type": entry.get("deletion_type"),
+                "message_id": entry.get("message_id"),
+                "x_originating_ip": entry.get("x_originating_ip"),
+                "conversation_id": entry.get("conversation_id"),
+                "body_preview": entry.get("body_preview"),
+                "source_file": entry.get("source_file"),
+                "file_type": entry.get("file_type"),
+                "file_format": entry.get("file_format"),
+            },
+        ))
+    return sort_timeline(timeline)
 
 
 # ──────────────────────────────────────────
@@ -523,3 +568,49 @@ def _sort_key(entry: dict) -> float:
         if ts is not None and hasattr(ts, "timestamp"):
             return ts.timestamp()
     return 0.0
+
+
+def _select_timeline_timestamp_and_action(entry: dict) -> tuple[datetime | None, str]:
+    item_type = entry.get("item_type") or "email"
+    if entry.get("is_deleted"):
+        timestamp = entry.get("delivery_time") or entry.get("submit_time") or entry.get("creation_time")
+        return timestamp, f"{item_type}_deleted"
+    if item_type == "email":
+        if entry.get("submit_time"):
+            return entry.get("submit_time"), "mail_sent"
+        if entry.get("delivery_time"):
+            return entry.get("delivery_time"), "mail_received"
+        if entry.get("creation_time"):
+            return entry.get("creation_time"), "mail_drafted"
+        return None, "mail_activity"
+    if entry.get("creation_time"):
+        return entry.get("creation_time"), f"{item_type}_recorded"
+    if entry.get("submit_time"):
+        return entry.get("submit_time"), f"{item_type}_updated"
+    if entry.get("delivery_time"):
+        return entry.get("delivery_time"), f"{item_type}_updated"
+    return None, f"{item_type}_activity"
+
+
+def _timeline_target(entry: dict) -> str:
+    return make_target(
+        entry.get("subject"),
+        entry.get("sender_email"),
+        entry.get("folder_path"),
+        entry.get("message_id"),
+        entry.get("item_type"),
+    )
+
+
+def _timeline_summary(action: str, target: str, item_type: str) -> str:
+    if action == "mail_received":
+        return f"Mail received: {target}"
+    if action == "mail_sent":
+        return f"Mail sent: {target}"
+    if action == "mail_drafted":
+        return f"Mail drafted: {target}"
+    if action == "email_deleted":
+        return f"Mail deleted: {target}"
+    if action.endswith("_deleted"):
+        return f"{item_type.title()} deleted: {target}"
+    return f"{item_type.title()} event: {target}"

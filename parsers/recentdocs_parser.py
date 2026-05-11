@@ -2,6 +2,7 @@ import re
 from datetime import datetime, timezone
 
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
 
 try:
     from Registry import Registry
@@ -56,5 +57,18 @@ def parse_to_timeline(entries: list[dict]) -> list[dict]:
     for entry in entries:
         if not entry.get("last_written_time"):
             continue
-        timeline.append({"timestamp": entry["last_written_time"], "event_type": "recentdocs", "source": "RecentDocs", "description": f"Recent document recorded: {entry.get('document_name')}", "detail": {"username": entry.get("username"), "registry_key": entry.get("registry_key"), "extension": entry.get("extension")}})
-    return timeline
+        target = make_target(entry.get("document_name"), entry.get("slot"))
+        timeline.append(build_timeline_event(
+            timestamp=entry["last_written_time"],
+            artifact_type="recentdocs",
+            action="recent_document_recorded",
+            target=target,
+            source="RecentDocs",
+            summary=f"Recent document recorded: {target}",
+            detail={
+                "username": entry.get("username"),
+                "registry_key": entry.get("registry_key"),
+                "extension": entry.get("extension"),
+            },
+        ))
+    return sort_timeline(timeline)

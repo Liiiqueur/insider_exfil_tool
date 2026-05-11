@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 
 from parsers.artifact_weights import attach_artifact_weight
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
 
 try:
     from Evtx.Evtx import Evtx
@@ -80,8 +81,39 @@ def parse(collected: list[dict]) -> list[dict]:
 
 def parse_to_timeline(entries: list[dict]) -> list[dict]:
     timeline = []
+    action_map = {
+        4624: "logon",
+        4634: "logoff",
+        4647: "logoff_request",
+        4656: "handle_requested",
+        4660: "object_deleted",
+        4663: "object_accessed",
+        4688: "process_created",
+        6416: "device_detected",
+    }
     for entry in entries:
-        if not entry.get("timestamp"):
+        timestamp = entry.get("timestamp")
+        if not timestamp:
             continue
-        timeline.append({"timestamp": entry["timestamp"], "event_type": f"event_{entry.get('event_id')}", "source": entry.get("channel") or "Event Log", "description": entry.get("object_name") or entry.get("target_filename") or entry.get("new_process_name") or entry.get("device_description") or f"Event {entry.get('event_id')}", "detail": entry.get("event_data", {})})
-    return timeline
+        event_id = entry.get("event_id")
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="eventlog",
+            action=action_map.get(event_id, f"event_{event_id}"),
+            target=make_target(
+                entry.get("object_name"),
+                entry.get("target_filename"),
+                entry.get("new_process_name"),
+                entry.get("device_description"),
+                f"Event {event_id}",
+            ),
+            source=entry.get("channel") or "Event Log",
+            detail={
+                "event_id": event_id,
+                "provider": entry.get("provider"),
+                "record_id": entry.get("record_id"),
+                "source_log": entry.get("source_log"),
+                "event_data": entry.get("event_data", {}),
+            },
+        ))
+    return sort_timeline(timeline)

@@ -1,10 +1,15 @@
+import os
 import sys
 from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 from ui import MainWindow
 
 def main():
     app = QApplication(sys.argv)
+    icon_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "Icon.png"))
+    if os.path.exists(icon_path):
+        app.setWindowIcon(QIcon(icon_path))
     window = MainWindow()
     window.show()
     QTimer.singleShot(0, window.show_startup_dialog)

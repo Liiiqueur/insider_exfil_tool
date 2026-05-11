@@ -3,6 +3,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from parsers.timeline_event import build_timeline_event, make_target, sort_timeline
+
 logger = logging.getLogger(__name__)
 
 
@@ -201,3 +203,43 @@ def _strip_sha1_prefix(value: str) -> str:
     if value.startswith("0000") and len(value) > 4:
         return value[4:]
     return value
+
+
+def parse_to_timeline(entries: list[dict]) -> list[dict]:
+    timeline = []
+    action_map = {
+        "InventoryApplicationFile": "application_file_recorded",
+        "InventoryApplication": "application_recorded",
+        "InventoryDriverBinary": "driver_recorded",
+        "InventoryDeviceContainer": "device_recorded",
+        "InventoryDevicePnp": "device_recorded",
+        "ApplicationShortcut": "shortcut_recorded",
+        "LegacyFile": "legacy_file_recorded",
+    }
+    for entry in entries:
+        timestamp = entry.get("last_modified")
+        if not timestamp:
+            continue
+        subkey_type = entry.get("subkey_type", "")
+        target = make_target(
+            entry.get("file_path"),
+            entry.get("install_path"),
+            entry.get("device_id"),
+            entry.get("file_name"),
+        )
+        timeline.append(build_timeline_event(
+            timestamp=timestamp,
+            artifact_type="amcache",
+            action=action_map.get(subkey_type, "amcache_recorded"),
+            target=target,
+            source="Amcache",
+            detail={
+                "subkey_type": subkey_type,
+                "file_name": entry.get("file_name"),
+                "publisher": entry.get("publisher"),
+                "product": entry.get("product"),
+                "sha1": entry.get("sha1"),
+                "source_path": entry.get("source_path"),
+            },
+        ))
+    return sort_timeline(timeline)
