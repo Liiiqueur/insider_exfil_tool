@@ -1,5 +1,3 @@
-import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from PyQt5.QtCore import QThread, pyqtSignal
 from .constants import ARTIFACT_RUNNERS, build_timeline_entries
 from image_handler import ImageHandler
@@ -28,7 +26,6 @@ class LoadImageWorker(QThread):
 
 
 class ListDirWorker(QThread):
-
     done  = pyqtSignal(list, object)   # entries, tree_item
     error = pyqtSignal(str)
 
@@ -49,7 +46,6 @@ class ListDirWorker(QThread):
 
 
 class ArtifactWorker(QThread):
-
     done    = pyqtSignal(str, list)    # artifact_id, entries
     log_msg = pyqtSignal(str)
     error   = pyqtSignal(str)
@@ -74,3 +70,49 @@ class ArtifactWorker(QThread):
             self.done.emit(self.artifact_id, entries)
         except Exception as exc:
             self.error.emit(f"[ERROR] {self.artifact_id} parse failed: {exc}")
+
+
+class CorrelationWorker(QThread):
+
+    done    = pyqtSignal(list, list)   # timeline, correlations
+    log_msg = pyqtSignal(str)
+    error   = pyqtSignal(str)
+
+    def __init__(self, artifact_cache: dict):
+        super().__init__()
+        self.artifact_cache = artifact_cache
+
+    def run(self):
+        try:
+            import traceback
+            from core.timeline import build_timeline
+            from core.correlator import correlate
+
+            self.log_msg.emit("[INFO] 타임라인 구성 중...")
+            timeline = build_timeline(self.artifact_cache)
+            self.log_msg.emit(f"[INFO] 타임라인 이벤트: {len(timeline)}개")
+
+            # ── 타임라인 타임스탬프 진단 ──────────────────────
+            naive_count = sum(
+                1 for e in timeline
+                if isinstance(e.get("timestamp"), __import__("datetime").datetime)
+                and e.get("timestamp").tzinfo is None
+            )
+            if naive_count:
+                self.log_msg.emit(
+                    f"[WARN] naive datetime 이벤트 {naive_count}개 발견 "
+                    f"(source 샘플: "
+                    f"{[e.get('source') for e in timeline if isinstance(e.get('timestamp'), __import__('datetime').datetime) and e.get('timestamp').tzinfo is None][:5]})"
+                )
+
+            self.log_msg.emit("[INFO] 상관관계 탐지 중...")
+            correlations = correlate(timeline)
+            self.log_msg.emit(f"[INFO] 상관관계 탐지 완료: {len(correlations)}개")
+
+            self.done.emit(timeline, [c.to_dict() for c in correlations])
+
+        except Exception:
+            import traceback
+            tb = traceback.format_exc()
+            self.log_msg.emit(f"[ERROR] 상관관계 탐지 실패 - 전체 traceback:\n{tb}")
+            self.error.emit(f"[ERROR] 상관관계 탐지 실패: {tb.splitlines()[-1]}")

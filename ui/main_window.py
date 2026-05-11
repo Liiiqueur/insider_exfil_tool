@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from PyQt5.QtCore import QSize, Qt
-from PyQt5.QtGui import QColor, QFont, QIcon, QKeySequence
+from PyQt5.QtGui import QColor, QFont, QKeySequence
 from PyQt5.QtWidgets import (
     QShortcut,
     QAbstractItemView,
@@ -36,8 +36,9 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .constants      import C_AMBER, C_BLUE, C_TEXT, ARTIFACT_INDEX, ARTIFACT_REGISTRY
-from .workers        import ArtifactWorker, ListDirWorker, LoadImageWorker
+
+from .constants      import C_AMBER, C_BLUE, C_RED, C_SUBTEXT, C_TEXT, ARTIFACT_INDEX, ARTIFACT_REGISTRY
+from .workers        import ArtifactWorker, CorrelationWorker, ListDirWorker, LoadImageWorker
 from .widgets        import CopyableTableWidget, SortableTableWidgetItem, StartupDialog, TimelineExplorerWidget, ProgressDialog
 from .mixins         import SettingsMixin, StyleMixin
 from . import artifact_columns as ac
@@ -50,7 +51,6 @@ _MAX_RAW_JSON_ROWS = 300
 
 
 class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
-
     def __init__(self):
         super().__init__()
         self._base_font_pt       = 10
@@ -74,6 +74,11 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self._current_filtered_entries:list         = []
         self._pending_image_path:      str | None   = None
         self._progress_dialog:         ProgressDialog | None = None
+        self._correlations:            list         = []
+
+        # 자동 수집 큐
+        self._run_queue:               list         = []   # 대기 중인 artifact_id
+        self._queue_total:             int          = 0    # 진행률 표시용 전체 크기
 
         self._init_ui()
         self._apply_dynamic_fonts()
@@ -98,10 +103,15 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.act_export = QAction("Export Result", self)
         self.act_export.setEnabled(False)
         self.act_export.triggered.connect(self._export_results)
+        self.act_correlate = QAction("Correlate", self)
+        self.act_correlate.setEnabled(False)
+        self.act_correlate.triggered.connect(self._run_correlation)
         toolbar.addAction(act_open)
         toolbar.addAction(self.act_timeline)
         toolbar.addSeparator()
         toolbar.addAction(self.act_export)
+        toolbar.addSeparator()
+        toolbar.addAction(self.act_correlate)
 
         # ── 3-패널 분할 ───────────────────────────────────
         main_split = QSplitter(Qt.Horizontal)
@@ -123,7 +133,9 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         timeline_layout.setContentsMargins(0, 0, 0, 0)
         timeline_layout.setSpacing(0)
         self.timeline_page_widget = TimelineExplorerWidget([], self)
-        self.timeline_page_widget.detail_navigation_requested.connect(self._open_timeline_detail_target)
+        self.timeline_page_widget.detail_navigation_requested.connect(
+            self._open_timeline_detail_target
+        )
         timeline_layout.addWidget(self.timeline_page_widget)
         self._timeline_tab_index = None
         self._timeline_entries_ref = None
@@ -135,6 +147,15 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.main_pages.addTab(workspace_page, "File System")
         self.main_pages.tabBar().setTabButton(0, QTabBar.RightSide, None)
         self.main_pages.setCurrentIndex(0)
+
+        self.correlation_panel = self._make_correlation_panel()
+        self.correlation_panel.setVisible(False)
+
+        top_split = QSplitter(Qt.Vertical)
+        top_split.addWidget(self.main_pages)
+        top_split.addWidget(self.correlation_panel)
+        top_split.setSizes([700, 300])
+        top_split.setChildrenCollapsible(True)
 
         # ── 로그 패널 ─────────────────────────────────────
         log_panel  = QWidget()
@@ -154,7 +175,7 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         root = QVBoxLayout()
         root.setContentsMargins(4, 4, 4, 4)
         root.setSpacing(4)
-        root.addWidget(self.main_pages, stretch=1)
+        root.addWidget(top_split, stretch=1)
         root.addWidget(log_panel)
         container = QWidget()
         container.setLayout(root)
@@ -184,7 +205,9 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.status.addPermanentWidget(self.font_up_btn)
         self.status.showMessage("Open a forensic image to start.")
 
+        # ── 종료 단축키 ───────────────────────────────────
         QShortcut(QKeySequence("Ctrl+Q"), self).activated.connect(self.close)
+        QShortcut(QKeySequence("Ctrl+W"), self).activated.connect(self.close)
 
     # ── 패널 팩토리 ───────────────────────────────────────
 
@@ -498,6 +521,15 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.result_raw.clear()
         self.act_export.setEnabled(False)
         self.act_timeline.setEnabled(False)
+        self.act_correlate.setEnabled(False)
+        self._run_queue  = []
+        self._queue_total = 0
+        self._clear_correlation_panel()
+        # 아티팩트 목록 라벨 초기화
+        for i in range(self.artifact_list.count()):
+            item     = self.artifact_list.item(i)
+            aid      = item.data(Qt.UserRole)
+            item.setText(f"  {ARTIFACT_INDEX[aid]['label']}")
 
     # ═══════════════════════════════════════════════════════
     # 이벤트 핸들러 — 이미지·트리·파일
@@ -524,7 +556,9 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
             vol_item.addChild(QTreeWidgetItem(["Loading..."]))
             root_item.addChild(vol_item)
         root_item.setExpanded(True)
-        self.run_btn.setEnabled(self._current_aid is not None)
+
+        # 이미지 로드 완료 후 전체 아티팩트 자동 수집 시작
+        self._start_auto_run()
 
     def _on_tree_expanded(self, item):
         meta = self._item_meta.get(id(item))
@@ -884,6 +918,65 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
     # ═══════════════════════════════════════════════════════
     # 이벤트 핸들러 — 아티팩트
     # ═══════════════════════════════════════════════════════
+    # 자동 수집 큐
+    # ═══════════════════════════════════════════════════════
+
+    def _start_auto_run(self) -> None:
+        self._run_queue  = [a["id"] for a in ARTIFACT_REGISTRY]
+        self._queue_total = len(self._run_queue)
+        self.run_btn.setEnabled(False)
+        self._log(f"[INFO] 자동 수집 시작: {self._queue_total}개 아티팩트")
+        self._run_next_in_queue()
+
+    def _run_next_in_queue(self) -> None:
+        if not self._run_queue:
+            done = self._queue_total
+            self._log(f"[INFO] 자동 수집 완료: {done}개 아티팩트")
+            self.status.showMessage(f"수집 완료: {done}개 아티팩트")
+            self.act_correlate.setEnabled(bool(self._artifact_cache))
+            self.run_btn.setEnabled(self._current_aid is not None)
+            return
+
+        aid      = self._run_queue.pop(0)
+        done_cnt = self._queue_total - len(self._run_queue) - 1
+        self.status.showMessage(
+            f"수집 중 ({done_cnt}/{self._queue_total}): {ARTIFACT_INDEX[aid]['label']}"
+        )
+
+        worker = ArtifactWorker(aid, self._handler)
+        worker.log_msg.connect(self._log)
+        worker.done.connect(self._on_auto_run_done)
+        worker.error.connect(self._on_auto_run_error)
+        worker.finished.connect(self._run_next_in_queue)
+        self._keep(worker)
+        worker.start()
+
+    def _on_auto_run_done(self, aid: str, entries: list) -> None:
+        self._artifact_cache[aid] = entries
+        self._log(f"[INFO] {aid}: {len(entries)}개 수집 완료")
+
+        # 현재 사용자가 선택한 아티팩트면 바로 결과 표시
+        if aid == self._current_aid:
+            self._display_artifact(aid, entries)
+            self.act_export.setEnabled(bool(entries))
+
+        # 아티팩트 목록에 완료 표시 업데이트
+        self._update_artifact_list_item(aid, len(entries))
+
+    def _on_auto_run_error(self, msg: str) -> None:
+        self._log(msg)
+
+    def _update_artifact_list_item(self, aid: str, count: int) -> None:
+        for i in range(self.artifact_list.count()):
+            item = self.artifact_list.item(i)
+            if item.data(Qt.UserRole) == aid:
+                label = ARTIFACT_INDEX[aid]["label"]
+                item.setText(f"  {label}  ({count})")
+                break
+
+    # ═══════════════════════════════════════════════════════
+    # 이벤트 핸들러 — 아티팩트
+    # ═══════════════════════════════════════════════════════
 
     def _on_artifact_clicked(self, item: QListWidgetItem):
         if hasattr(self, "main_pages"):
@@ -897,8 +990,20 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self._configure_filter_bar(aid)
         self.run_btn.setEnabled(self._handler is not None)
         if aid in self._artifact_cache:
+            self.run_btn.setEnabled(self._handler is not None)
             self._display_artifact(aid, self._artifact_cache[aid])
+        elif self._run_queue:
+            # 아직 자동 수집 큐가 돌고 있음
+            self.run_btn.setEnabled(False)
+            self.result_overview.setPlainText(
+                f"{artifact['label']}\n\n{artifact['description']}\n\n수집 대기 중..."
+            )
+            self.result_parsed_table.clear()
+            self.result_parsed_table.setRowCount(0)
+            self.result_parsed_table.setColumnCount(0)
+            self.result_raw.clear()
         else:
+            self.run_btn.setEnabled(self._handler is not None)
             self.result_overview.setPlainText(
                 f"{artifact['label']}\n\n{artifact['description']}"
             )
@@ -1050,6 +1155,8 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.main_pages.setCurrentIndex(0)
         self._display_artifact(aid, entries)
         self.act_export.setEnabled(bool(entries))
+        # 하나 이상 아티팩트가 캐시에 있으면 Correlate 활성화
+        self.act_correlate.setEnabled(bool(self._artifact_cache))
 
     def _on_artifact_error(self, msg: str):
         self._log(msg)
@@ -1236,6 +1343,155 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         worker.finished.connect(
             lambda: self._workers.remove(worker) if worker in self._workers else None
         )
+
+    # ═══════════════════════════════════════════════════════
+    # Correlation 패널
+    # ═══════════════════════════════════════════════════════
+
+    def _make_correlation_panel(self) -> QWidget:
+        panel  = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # 헤더
+        header_bar    = QWidget()
+        header_layout = QHBoxLayout(header_bar)
+        header_layout.setContentsMargins(8, 4, 8, 4)
+        label = QLabel("  Correlations")
+        label.setObjectName("panel_header")
+        label.setFixedHeight(28)
+        header_layout.addWidget(label, stretch=1)
+        close_btn = QPushButton("✕")
+        close_btn.setFlat(True)
+        close_btn.setFixedWidth(28)
+        close_btn.clicked.connect(lambda: self.correlation_panel.setVisible(False))
+        header_layout.addWidget(close_btn)
+        layout.addWidget(header_bar)
+
+        # 요약 레이블
+        self.corr_summary_lbl = QLabel("  아티팩트를 수집한 뒤 Correlate 버튼을 클릭하세요.")
+        self.corr_summary_lbl.setObjectName("corr_summary")
+        self.corr_summary_lbl.setFixedHeight(24)
+        layout.addWidget(self.corr_summary_lbl)
+
+        # 결과 테이블
+        self.corr_table = CopyableTableWidget()
+        self.corr_table.setColumnCount(6)
+        self.corr_table.setHorizontalHeaderLabels([
+            "Type", "Confidence", "Sources", "# Events", "Anchor Time", "Description"
+        ])
+        self.corr_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.corr_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.corr_table.setSortingEnabled(True)
+        self.corr_table.verticalHeader().setVisible(False)
+        self.corr_table.setAlternatingRowColors(True)
+        self.corr_table.setWordWrap(False)
+        self.corr_table.itemSelectionChanged.connect(self._on_corr_row_selected)
+
+        hdr = self.corr_table.horizontalHeader()
+        hdr.setSectionResizeMode(5, QHeaderView.Stretch)   # Description stretch
+        for i in range(5):
+            hdr.setSectionResizeMode(i, QHeaderView.ResizeToContents)
+
+        # 상세 뷰 (선택된 상관관계의 이벤트 목록)
+        self.corr_detail = QTextEdit()
+        self.corr_detail.setReadOnly(True)
+        self.corr_detail.setFixedHeight(120)
+
+        layout.addWidget(self.corr_table, stretch=1)
+        layout.addWidget(self.corr_detail)
+        return panel
+
+    def _run_correlation(self):
+        if not self._artifact_cache:
+            return
+
+        self.act_correlate.setEnabled(False)
+        self.correlation_panel.setVisible(True)
+        self.corr_summary_lbl.setText("  상관관계 탐지 중...")
+        self.corr_table.setRowCount(0)
+        self.corr_detail.clear()
+
+        worker = CorrelationWorker(dict(self._artifact_cache))
+        worker.log_msg.connect(self._log)
+        worker.done.connect(self._on_correlation_done)
+        worker.error.connect(self._on_correlation_error)
+        worker.finished.connect(lambda: self.act_correlate.setEnabled(True))
+        self._keep(worker)
+        worker.start()
+
+    def _on_correlation_done(self, timeline: list, correlations: list):
+        self._correlations = correlations
+
+        conf_color = {"high": C_RED, "medium": C_AMBER, "low": C_SUBTEXT}
+
+        self.corr_table.setSortingEnabled(False)
+        self.corr_table.setRowCount(len(correlations))
+
+        for row, corr in enumerate(correlations):
+            confidence = corr.get("confidence", "low")
+            cells = [
+                SortableTableWidgetItem(corr.get("correlation_type", "")),
+                SortableTableWidgetItem(confidence),
+                SortableTableWidgetItem(", ".join(corr.get("sources", []))),
+                SortableTableWidgetItem(str(corr.get("event_count", 0)), corr.get("event_count", 0)),
+                SortableTableWidgetItem(
+                    self._fmt_dt(corr.get("anchor_time")),
+                    corr.get("anchor_time").timestamp() if corr.get("anchor_time") else 0,
+                ),
+                SortableTableWidgetItem(corr.get("description", "")),
+            ]
+            for col, cell in enumerate(cells):
+                if col == 1:   # Confidence 컬럼 색상
+                    cell.setForeground(QColor(conf_color.get(confidence, C_TEXT)))
+                else:
+                    cell.setForeground(QColor(C_TEXT))
+                self.corr_table.setItem(row, col, cell)
+
+        self.corr_table.setSortingEnabled(True)
+        self.corr_summary_lbl.setText(
+            f"  타임라인 {len(timeline)}개 이벤트 |  "
+            f"상관관계 {len(correlations)}개 탐지  "
+            f"(high: {sum(1 for c in correlations if c.get('confidence') == 'high')}  "
+            f"medium: {sum(1 for c in correlations if c.get('confidence') == 'medium')}  "
+            f"low: {sum(1 for c in correlations if c.get('confidence') == 'low')})"
+        )
+        self.status.showMessage(f"Correlation: {len(correlations)}개 탐지 완료")
+
+    def _on_correlation_error(self, msg: str):
+        self._log(msg)
+        self.corr_summary_lbl.setText(f"  오류: {msg}")
+
+    def _on_corr_row_selected(self):
+        rows = self.corr_table.selectionModel().selectedRows()
+        if not rows or not hasattr(self, "_correlations"):
+            return
+        row = rows[0].row()
+        if row >= len(self._correlations):
+            return
+
+        corr   = self._correlations[row]
+        events = corr.get("events", [])
+        lines  = [
+            f"[{corr.get('correlation_type')}] {corr.get('description')}",
+            f"Confidence: {corr.get('confidence')}  |  Events: {len(events)}",
+            "",
+        ]
+        for event in events:
+            ts   = self._fmt_dt(event.get("timestamp"))
+            src  = event.get("source", "")
+            desc = event.get("description", "")
+            lines.append(f"  {ts}  [{src}]  {desc}")
+        self.corr_detail.setPlainText("\n".join(lines))
+
+    def _clear_correlation_panel(self):
+        self.corr_table.setRowCount(0)
+        self.corr_detail.clear()
+        self.corr_summary_lbl.setText("  아티팩트를 수집한 뒤 Correlate 버튼을 클릭하세요.")
+        self.correlation_panel.setVisible(False)
+        self._correlations = []
+
     def closeEvent(self, event):
         for worker in list(self._workers):
             if worker.isRunning():
