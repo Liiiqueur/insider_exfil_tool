@@ -41,6 +41,10 @@ from .constants      import C_AMBER, C_BLUE, C_RED, C_SUBTEXT, C_TEXT, ARTIFACT_
 from .workers        import ArtifactWorker, CorrelationWorker, ListDirWorker, LoadImageWorker
 from .widgets        import CopyableTableWidget, SortableTableWidgetItem, StartupDialog, TimelineExplorerWidget, ProgressDialog
 from .mixins         import SettingsMixin, StyleMixin
+
+from .behavior_panel import BehaviorPanel
+from core.correlator import correlate
+from core.behavior import detect_all
 from . import artifact_columns as ac
 
 logger = logging.getLogger(__name__)
@@ -148,14 +152,18 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.main_pages.tabBar().setTabButton(0, QTabBar.RightSide, None)
         self.main_pages.setCurrentIndex(0)
 
+        self.behavior_panel = BehaviorPanel()
+        self.behavior_panel.setVisible(False)
+
         self.correlation_panel = self._make_correlation_panel()
         self.correlation_panel.setVisible(False)
 
         top_split = QSplitter(Qt.Vertical)
         top_split.addWidget(self.main_pages)
+        top_split.addWidget(self.behavior_panel)
         top_split.addWidget(self.correlation_panel)
-        top_split.setSizes([700, 300])
-        top_split.setChildrenCollapsible(True)
+
+        top_split.setSizes([700, 200, 200])
 
         # ── 로그 패널 ─────────────────────────────────────
         log_panel  = QWidget()
@@ -230,61 +238,125 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         return panel
 
     def _make_file_browser(self) -> QWidget:
-        file_panel  = QWidget()
+
+        file_panel = QWidget()
+
         file_layout = QVBoxLayout(file_panel)
         file_layout.setContentsMargins(0, 0, 0, 0)
         file_layout.setSpacing(0)
 
+        # 헤더
         label = QLabel("  Evidence")
         label.setFixedHeight(28)
         label.setObjectName("panel_header")
+
         file_layout.addWidget(label)
 
+        # 경로 바
         self.file_path_bar = QLabel("  Path: /")
         self.file_path_bar.setFixedHeight(28)
         self.file_path_bar.setObjectName("path_bar")
+
         file_layout.addWidget(self.file_path_bar)
 
+        # 파일 테이블
         self.file_table = CopyableTableWidget()
+
         self.file_table.setColumnCount(4)
-        self.file_table.setHorizontalHeaderLabels(["Name", "Size", "Type", "Inode"])
+
+        self.file_table.setHorizontalHeaderLabels([
+            "Name",
+            "Size",
+            "Type",
+            "Inode",
+        ])
+
         fh = self.file_table.horizontalHeader()
+
         fh.setSectionResizeMode(QHeaderView.Interactive)
         fh.setMinimumSectionSize(60)
         fh.setStretchLastSection(False)
         fh.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
         self.file_table.setColumnWidth(0, 420)
         self.file_table.setColumnWidth(1, 110)
-        self.file_table.setColumnWidth(2,  90)
-        self.file_table.setColumnWidth(3,  90)
-        self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.file_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.file_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.file_table.setSortingEnabled(True)
-        self.file_table.setShowGrid(False)
-        self.file_table.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.file_table.customContextMenuRequested.connect(self._open_file_context_menu)
-        self.file_table.verticalHeader().setVisible(False)
-        self.file_table.itemClicked.connect(self._on_file_clicked)
-        file_layout.addWidget(self.file_table)
-        return file_panel
+        self.file_table.setColumnWidth(2, 90)
+        self.file_table.setColumnWidth(3, 90)
 
-        # 하단 뷰어 탭
-        self.hex_view  = QTextEdit(); self.hex_view.setReadOnly(True)
-        self.text_view = QTextEdit(); self.text_view.setReadOnly(True)
-        self.meta_view = QTextEdit(); self.meta_view.setReadOnly(True)
+        self.file_table.setSelectionBehavior(
+            QAbstractItemView.SelectRows
+        )
+
+        self.file_table.setSelectionMode(
+            QAbstractItemView.ExtendedSelection
+        )
+
+        self.file_table.setEditTriggers(
+            QAbstractItemView.NoEditTriggers
+        )
+
+        self.file_table.setSortingEnabled(True)
+
+        self.file_table.setShowGrid(False)
+
+        self.file_table.setContextMenuPolicy(
+            Qt.CustomContextMenu
+        )
+
+        self.file_table.customContextMenuRequested.connect(
+            self._open_file_context_menu
+        )
+
+        self.file_table.verticalHeader().setVisible(False)
+
+        self.file_table.itemClicked.connect(
+            self._on_file_clicked
+        )
+
+        file_layout.addWidget(self.file_table)
+
+        # ─────────────────────────────────────
+        # 하단 Viewer 생성
+        # ─────────────────────────────────────
+
+        self.fs_hex_view = QTextEdit()
+        self.fs_hex_view.setReadOnly(True)
+
+        self.fs_text_view = QTextEdit()
+        self.fs_text_view.setReadOnly(True)
+
+        self.fs_meta_view = QTextEdit()
+        self.fs_meta_view.setReadOnly(True)
 
         viewer_tabs = QTabWidget()
         viewer_tabs.setObjectName("viewer_tabs")
-        viewer_tabs.setMovable(True)
-        viewer_tabs.addTab(self.text_view, "Text")
-        viewer_tabs.addTab(self.hex_view,  "Hex")
-        viewer_tabs.addTab(self.meta_view, "Metadata")
+
+        viewer_tabs.addTab(
+            self.fs_text_view,
+            "Text",
+        )
+
+        viewer_tabs.addTab(
+            self.fs_hex_view,
+            "Hex",
+        )
+
+        viewer_tabs.addTab(
+            self.fs_meta_view,
+            "Metadata",
+        )
+
+        # ─────────────────────────────────────
+        # 상/하 분할
+        # ─────────────────────────────────────
 
         split = QSplitter(Qt.Vertical)
+
         split.addWidget(file_panel)
         split.addWidget(viewer_tabs)
-        split.setSizes([400, 260])
+
+        split.setSizes([450, 240])
+
         return split
 
     def _make_artifact_panel(self) -> QWidget:
@@ -1407,19 +1479,41 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         if not self._artifact_cache:
             return
 
-        self.act_correlate.setEnabled(False)
-        self.correlation_panel.setVisible(True)
-        self.corr_summary_lbl.setText("  상관관계 탐지 중...")
-        self.corr_table.setRowCount(0)
-        self.corr_detail.clear()
+        timeline = self._artifact_cache.get("timeline") 
+        if not timeline:
+            QMessageBox.warning(
+                self,
+                "Timeline Required",
+                "Generate timeline first."
+            )
+            return
 
-        worker = CorrelationWorker(dict(self._artifact_cache))
-        worker.log_msg.connect(self._log)
-        worker.done.connect(self._on_correlation_done)
-        worker.error.connect(self._on_correlation_error)
-        worker.finished.connect(lambda: self.act_correlate.setEnabled(True))
-        self._keep(worker)
-        worker.start()
+        try:
+            correlations = correlate(timeline)
+
+            patterns = detect_all(        # ← correlations 인수 제거
+                timeline,
+                self._artifact_cache,
+            )
+
+            self.behavior_panel.setVisible(True)
+            self.behavior_panel.load(
+                patterns,
+                correlations,
+            )
+
+            self.status.showMessage(
+                f"Patterns: {len(patterns)} | "
+                f"Correlations: {len(correlations)}"
+            )
+
+        except Exception as exc:
+            logger.exception(exc)
+            QMessageBox.critical(
+                self,
+                "Behavior Analysis Error",
+                str(exc),
+            )
 
     def _on_correlation_done(self, timeline: list, correlations: list):
         self._correlations = correlations
@@ -1486,10 +1580,14 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.corr_detail.setPlainText("\n".join(lines))
 
     def _clear_correlation_panel(self):
-        self.corr_table.setRowCount(0)
-        self.corr_detail.clear()
-        self.corr_summary_lbl.setText("  아티팩트를 수집한 뒤 Correlate 버튼을 클릭하세요.")
-        self.correlation_panel.setVisible(False)
+        if hasattr(self, "corr_table"):
+            self.corr_table.setRowCount(0)
+        if hasattr(self, "corr_detail"):
+            self.corr_detail.clear()
+        if hasattr(self, "corr_summary_lbl"):
+            self.corr_summary_lbl.setText("  아티팩트를 수집한 뒤 Correlate 버튼을 클릭하세요.")
+        if hasattr(self, "correlation_panel"):
+            self.correlation_panel.setVisible(False)
         self._correlations = []
 
     def closeEvent(self, event):
