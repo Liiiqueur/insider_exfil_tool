@@ -605,6 +605,114 @@ def detect_repeated_logon_failure(timeline: list[dict]) -> list[BehaviorPattern]
 
 
 # ──────────────────────────────────────────
+# 탐지기 11 — 신규 저장장치 최초 사용
+# ──────────────────────────────────────────
+ 
+def detect_new_device_first_use(
+    timeline: list[dict],
+    artifact_cache: dict,
+) -> list[BehaviorPattern]:
+    usb_entries = artifact_cache.get("usb", [])
+    if not usb_entries:
+        return []
+ 
+    file_events = [
+        e for e in timeline
+        if e.get("event_type") == "mft_created" and e.get("timestamp")
+    ]
+ 
+    patterns: list[BehaviorPattern] = []
+ 
+    for entry in usb_entries:
+        first_install = entry.get("first_install_time")
+        last_arrival  = entry.get("last_arrival_time")
+ 
+        if not isinstance(first_install, datetime) or not isinstance(last_arrival, datetime):
+            continue
+ 
+        first_install = _to_utc(first_install)
+        last_arrival  = _to_utc(last_arrival)
+ 
+        # 최초 설치 날짜와 마지막 연결 날짜가 같은 날 → 신규 장치
+        if first_install.date() != last_arrival.date():
+            continue
+ 
+        serial     = entry.get("serial_number", "")
+        vid        = entry.get("vendor_id", "")
+        pid        = entry.get("product_id", "")
+        name       = entry.get("friendly_name") or entry.get("product") or "Unknown Device"
+        is_unique  = entry.get("is_unique_serial", True)
+ 
+        # 연결 직후 파일 생성 여부 확인
+        created_after = [
+            e for e in file_events
+            if timedelta(0) <= _ts(e) - first_install <= _USB_FILE_WINDOW
+        ]
+        doc_created = [e for e in created_after if _is_doc_path(e.get("description", ""))]
+ 
+        if doc_created:
+            risk = "critical"
+        elif created_after:
+            risk = "high"
+        else:
+            risk = "high"   # 신규 장치 자체가 high
+ 
+        # 식별자 조합: VID/PID 있으면 우선, 없으면 시리얼
+        if vid and pid:
+            device_id = f"VID_{vid}&PID_{pid}"
+        elif serial:
+            device_id = serial
+        else:
+            device_id = name
+ 
+        evidence = [
+            f"장치명: {name}",
+            f"식별자: {device_id}",
+            f"고유 시리얼: {'예' if is_unique else '아니오 (OS 자동 생성)'}",
+            f"최초 연결: {_fmt(first_install)}",
+        ]
+        if created_after:
+            evidence.append(
+                f"연결 후 {_USB_FILE_WINDOW.seconds // 60}분 내 파일 생성: "
+                f"{len(created_after)}개 (문서 {len(doc_created)}개)"
+            )
+            evidence.append(f"생성 파일 예시: {_sample_desc(created_after, 3)}")
+        else:
+            evidence.append("연결 직후 파일 생성 이력 없음")
+ 
+        # USB 연결 이벤트를 timeline에서 찾아 matched_events 구성
+        usb_timeline_events = [
+            e for e in timeline
+            if e.get("event_type") == "usb_arrival"
+            and abs((_ts(e) - first_install).total_seconds()) < 86400
+        ]
+ 
+        matched_events = [*usb_timeline_events, *created_after] or [
+            {
+                "timestamp":   first_install,
+                "event_type":  "usb_arrival",
+                "source":      "usb",
+                "description": f"First use: {name} ({device_id})",
+                "detail":      entry,
+            }
+        ]
+ 
+        patterns.append(BehaviorPattern(
+            pattern_id     = "NEW_DEVICE_FIRST_USE",
+            name           = "신규 저장장치 최초 사용",
+            risk_level     = risk,
+            description    = (
+                f"미등록 장치 최초 연결: {name} ({device_id})"
+            ),
+            evidence       = evidence,
+            matched_events = matched_events,
+            detected_at    = first_install,
+        ))
+ 
+    return patterns
+
+
+# ──────────────────────────────────────────
 # 내부 유틸
 # ──────────────────────────────────────────
 
