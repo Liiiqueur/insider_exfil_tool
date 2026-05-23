@@ -46,10 +46,141 @@ from core.correlator import correlate
 from core.behavior   import detect_all
 from . import artifact_columns as ac
 
+from .risk_report_panel import RiskReportPanel
+from core.risk_scorer   import RiskScorer, RiskEvent
+from core.risk_rules    import RiskLevel
+
 logger = logging.getLogger(__name__)
 
 _MAX_TABLE_ROWS    = 200
 _MAX_RAW_JSON_ROWS = 300
+
+# ── 모듈 레벨: 타임라인 event_type → PATTERN_SCORES 키 매핑 ──────────
+_TIMELINE_TO_PATTERN: dict[str, str] = {
+    # ── MFT / 파일시스템 ──────────────────────────────────
+    "mft_modified"              : "large_file_copy",
+    "mft_created"               : "large_file_copy",
+    "mft_deleted"               : "large_file_copy",
+    "mft_renamed"               : "large_file_copy",
+    "file_copy"                 : "large_file_copy",
+    "large_file_copy"           : "large_file_copy",
+    "bulk_copy"                 : "large_file_copy",
+    "sensitive_file_open"       : "sensitive_file_access",
+    "sensitive_file_access"     : "sensitive_file_access",
+    "bulk_download"             : "bulk_file_download",
+    "bulk_file_download"        : "bulk_file_download",
+    "data_staging"              : "data_staging",
+
+    # ── 외부 장치 ──────────────────────────────────────────
+    "usb_connect"               : "usb_connected",
+    "usb_connected"             : "usb_connected",
+    "usb_write"                 : "usb_write",
+    "unauthorized_device"       : "unauthorized_device",
+
+    # ── 네트워크 / 클라우드 ───────────────────────────────
+    "cloud_upload"              : "cloud_upload_unusual",
+    "cloud_upload_unusual"      : "cloud_upload_unusual",
+    "suspicious_network"        : "suspicious_network_conn",
+    "suspicious_network_conn"   : "suspicious_network_conn",
+    "network_connection"        : "suspicious_network_conn",
+
+    # ── 이메일 ────────────────────────────────────────────
+    "email_large"               : "email_attachment_large",
+    "email_attachment_large"    : "email_attachment_large",
+    "email_send"                : "email_attachment_large",
+
+    # ── 인증 / 접근 ───────────────────────────────────────
+    "after_hours"               : "after_hours_access",
+    "after_hours_access"        : "after_hours_access",
+    "login_failed"              : "multiple_failed_login",
+    "multiple_failed_login"     : "multiple_failed_login",
+    "vpn_new_location"          : "vpn_from_new_location",
+    "vpn_from_new_location"     : "vpn_from_new_location",
+    "priv_escalation"           : "privilege_escalation",
+    "privilege_escalation"      : "privilege_escalation",
+
+    # ── 시스템 행위 ───────────────────────────────────────
+    "admin_tool"                : "admin_tool_usage",
+    "admin_tool_usage"          : "admin_tool_usage",
+    "screen_capture"            : "screen_capture",
+    "policy_bypass"             : "policy_bypass_attempt",
+    "policy_bypass_attempt"     : "policy_bypass_attempt",
+    "resignation"               : "resignation_flag",
+    "resignation_flag"          : "resignation_flag",
+
+    # ── 레지스트리 / 실행 ─────────────────────────────────
+    "registry_write"            : "policy_bypass_attempt",
+    "registry_modified"         : "policy_bypass_attempt",
+    "process_exec"              : "admin_tool_usage",
+    "prefetch"                  : "admin_tool_usage",
+    "shimcache"                 : "admin_tool_usage",
+    "amcache"                   : "admin_tool_usage",
+    "lnk_file"                  : "data_staging",
+
+    # ── 브라우저 / 웹 ────────────────────────────────────
+    "browser_history"           : "bulk_file_download",
+    "browser_download"          : "bulk_file_download",
+    "web_download"              : "bulk_file_download",
+
+    # ── 이벤트 로그 ──────────────────────────────────────
+    "evtx_login"                : "after_hours_access",
+    "evtx_logoff"               : "after_hours_access",
+    "evtx_failed_login"         : "multiple_failed_login",
+    "evtx_privilege"            : "privilege_escalation",
+    "evtx_process"              : "admin_tool_usage",
+    "evtx_usb"                  : "usb_connected",
+}
+
+
+def _build_risk_events(timeline: list) -> list:
+    events: list[RiskEvent] = []
+    for entry in timeline:
+        if isinstance(entry, dict):
+            # event_type 우선, category 차선
+            category = (entry.get("event_type") or entry.get("category") or "").lower()
+            ts_raw   = entry.get("timestamp")
+            metadata = {k: v for k, v in entry.items()
+                        if k not in ("category", "event_type", "timestamp")}
+        else:
+            category = (
+                getattr(entry, "event_type", "") or
+                getattr(entry, "category", "") or ""
+            ).lower()
+            ts_raw   = getattr(entry, "timestamp", None)
+            metadata = {}
+
+        pattern_id = _TIMELINE_TO_PATTERN.get(category)
+        if not pattern_id:
+            continue
+
+        if isinstance(ts_raw, datetime):
+            ts = ts_raw if ts_raw.tzinfo else ts_raw.replace(tzinfo=timezone.utc)
+        elif isinstance(ts_raw, (int, float)):
+            ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
+        elif isinstance(ts_raw, str):
+            try:
+                ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+        else:
+            continue
+
+        events.append(RiskEvent(pattern_id, ts, metadata))
+
+    return events
+
+
+def _timeline_latest_time(timeline: list) -> Optional[datetime]:
+    latest: Optional[datetime] = None
+    for entry in timeline:
+        ts = entry.get("timestamp") if isinstance(entry, dict) else getattr(entry, "timestamp", None)
+        if not isinstance(ts, datetime):
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if latest is None or ts > latest:
+            latest = ts
+    return latest
 
 
 class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
@@ -130,7 +261,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         toolbar.addAction(self.act_correlate)
 
         # ── 메인 탭 위젯 ──────────────────────────────────
-        # File System / Timeline(동적) / Analysis 세 탭
         self.main_pages = QTabWidget()
         self.main_pages.setObjectName("main_pages")
         self.main_pages.setTabsClosable(True)
@@ -196,7 +326,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.status = QStatusBar()
         self.setStatusBar(self.status)
 
-        # 로그 토글 버튼
         self._log_toggle_btn = QPushButton("▲ Log")
         self._log_toggle_btn.setObjectName("font_scale_btn")
         self._log_toggle_btn.setFlat(True)
@@ -204,7 +333,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self._log_toggle_btn.clicked.connect(self._toggle_log)
         self.status.addWidget(self._log_toggle_btn)
 
-        # 폰트 스케일 버튼
         self.font_down_btn = QPushButton("\u25BC")
         self.font_down_btn.setObjectName("font_scale_btn")
         self.font_down_btn.setFixedWidth(28)
@@ -453,7 +581,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # 헤더 바
         header_bar    = QWidget()
         header_layout = QHBoxLayout(header_bar)
         header_layout.setContentsMargins(12, 6, 12, 6)
@@ -471,10 +598,17 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
 
         layout.addWidget(header_bar)
 
-        # BehaviorPanel (행위 패턴 + 상관관계 통합 표시)
-        self.behavior_panel = BehaviorPanel()
-        layout.addWidget(self.behavior_panel, stretch=1)
+        # ── 분석 서브탭: 행위패턴 | 위험도 평가 ──────────
+        self._analysis_sub_tabs = QTabWidget()
+        self._analysis_sub_tabs.setObjectName("result_tabs")
 
+        self.behavior_panel = BehaviorPanel()
+        self._analysis_sub_tabs.addTab(self.behavior_panel, "🔍  행위 패턴")
+
+        self.risk_report_panel = RiskReportPanel()
+        self._analysis_sub_tabs.addTab(self.risk_report_panel, "⚠️  위험도 평가")
+
+        layout.addWidget(self._analysis_sub_tabs, stretch=1)
         return page
 
     # ═══════════════════════════════════════════════════════
@@ -523,7 +657,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self.main_pages.setCurrentIndex(0)
         self._timeline_entries_ref = None
 
-        # Timeline 탭 제거
         if self._timeline_tab_index is not None:
             self.main_pages.removeTab(self._timeline_tab_index)
             self._timeline_tab_index = None
@@ -555,12 +688,10 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self._run_queue   = []
         self._queue_total = 0
 
-        # Analysis 탭 초기화
         self.analysis_summary_lbl.setText(
             "타임라인을 생성한 뒤 Correlate 버튼을 클릭하면 분석을 시작합니다."
         )
 
-        # 아티팩트 목록 라벨 초기화
         for i in range(self.artifact_list.count()):
             item = self.artifact_list.item(i)
             aid  = item.data(Qt.UserRole)
@@ -1103,12 +1234,10 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
     def _ensure_timeline_tab(self) -> int:
         if self._timeline_tab_index is not None:
             return self._timeline_tab_index
-        # Analysis 탭 바로 앞에 삽입
         insert_at = self._analysis_tab_index if self._analysis_tab_index is not None else 1
         self._timeline_tab_index = self.main_pages.insertTab(
             insert_at, self.timeline_page, "📅  Timeline"
         )
-        # Analysis 탭 인덱스 보정 (Timeline이 앞에 삽입됐으면 +1)
         if (
             self._analysis_tab_index is not None
             and self._timeline_tab_index <= self._analysis_tab_index
@@ -1123,7 +1252,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         if widget is self.timeline_page:
             self.main_pages.removeTab(index)
             self._timeline_tab_index = None
-            # Analysis 탭 인덱스 보정
             if (
                 self._analysis_tab_index is not None
                 and index < self._analysis_tab_index
@@ -1131,7 +1259,6 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
                 self._analysis_tab_index -= 1
             self.main_pages.setCurrentIndex(0)
             return
-        # Analysis 탭은 닫기 금지 (tabBar().setTabButton으로 X 버튼 숨겼으므로 도달 안 함)
 
     def _on_artifact_done(self, aid: str, entries: list):
         self._artifact_cache[aid] = entries
@@ -1306,7 +1433,7 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
         self._progress_dialog = None
 
     # ═══════════════════════════════════════════════════════
-    # Correlate → Analysis 탭으로 전환
+    # Correlate → Analysis 탭
     # ═══════════════════════════════════════════════════════
 
     def _run_correlation(self):
@@ -1329,22 +1456,37 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
             correlations = correlate(timeline)
             patterns     = detect_all(timeline, self._artifact_cache)
 
-            # Analysis 탭 업데이트
             self.behavior_panel.load(patterns, correlations)
+
+            # 타임라인 기준 시각으로 RiskScorer 평가
+            # (포렌식 이미지 데이터가 과거 날짜이므로 now를 맞춰줘야 시간 감쇠 정상 동작)
+            risk_events   = _build_risk_events(timeline)
+            timeline_now  = _timeline_latest_time(timeline)
+            risk_report   = RiskScorer.evaluate(
+                events                  = risk_events,
+                subject_id              = self._get_subject_id(),
+                evaluation_window_hours = 168.0,
+                now                     = timeline_now,   # 타임라인 최신 시각 기준
+                generate_narrative      = True,
+            )
+            self.risk_report_panel.load(risk_report)
+
+            level = getattr(risk_report.risk_level, "value", str(risk_report.risk_level))
             self.analysis_summary_lbl.setText(
                 f"타임라인 {len(timeline):,}개 이벤트  |  "
                 f"행위 패턴 {len(patterns)}개  "
                 f"(critical: {sum(1 for p in patterns if getattr(p, 'risk_level', '') == 'critical' or (isinstance(p, dict) and p.get('risk_level') == 'critical'))}  "
                 f"high: {sum(1 for p in patterns if getattr(p, 'risk_level', '') == 'high' or (isinstance(p, dict) and p.get('risk_level') == 'high'))})  |  "
-                f"상관관계 {len(correlations)}개"
+                f"상관관계 {len(correlations)}개  |  "
+                f"위험도 {risk_report.score:.1f} [{level}]"
             )
 
-            # Analysis 탭으로 전환
             if self._analysis_tab_index is not None:
                 self.main_pages.setCurrentIndex(self._analysis_tab_index)
 
             self.status.showMessage(
-                f"패턴: {len(patterns)}개  |  상관관계: {len(correlations)}개 탐지 완료"
+                f"패턴: {len(patterns)}개  |  상관관계: {len(correlations)}개  |  "
+                f"위험도: {risk_report.score:.1f} ({level})"
             )
 
         except Exception as exc:
@@ -1354,6 +1496,11 @@ class MainWindow(SettingsMixin, StyleMixin, QMainWindow):
     # ═══════════════════════════════════════════════════════
     # 유틸리티
     # ═══════════════════════════════════════════════════════
+
+    def _get_subject_id(self) -> str:
+        if self._handler and hasattr(self._handler, "image_path"):
+            return os.path.basename(self._handler.image_path)
+        return "unknown"
 
     def _log(self, msg: str):
         ts = datetime.now().strftime("%H:%M:%S")
