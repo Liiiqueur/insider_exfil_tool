@@ -1218,6 +1218,26 @@ def _format_entry_brief(entry: dict) -> str:
     return " | ".join(parts) if parts else json.dumps(entry, ensure_ascii=False, default=str)
 
 
+def _is_recycle_bin_path(path_value) -> bool:
+    path = str(path_value or "").replace("\\", "/").lower()
+    return "/$recycle.bin/" in path or path.startswith("$recycle.bin/")
+
+
+def _dedupe_fs_events(events: list[dict]) -> list[dict]:
+    deduped = []
+    seen = set()
+    for event in events:
+        ts = event.get("timestamp")
+        action = str(event.get("action") or "").lower()
+        target = str(event.get("target") or event.get("summary") or "").lower()
+        key = (ts, action, target)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(event)
+    return deduped
+
+
 def _add_rule_finding(findings: list, rule_id: str, detail: str, evidence_lines: list[str]) -> int:
     rule = next(rule for rule in RISK_RULES if rule["id"] == rule_id)
     findings.append(
@@ -1239,6 +1259,11 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
     score = 0
 
     filesystem_events = [e for e in timeline if e.get("artifact_type") == "filesystem"]
+    filesystem_events = [
+        e for e in filesystem_events
+        if not _is_recycle_bin_path(e.get("target"))
+    ]
+    filesystem_events = _dedupe_fs_events(filesystem_events)
     usb_events = [e for e in timeline if e.get("artifact_type") == "usb"]
     web_events = [e for e in timeline if e.get("artifact_type") == "browser_artifacts"]
     mail_events = [e for e in timeline if e.get("artifact_type") == "ost_pst"]
@@ -1259,7 +1284,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
                 findings,
                 "mass_file_access",
                 f"{count} file access events were recorded within 60 minutes.",
-                [_format_event_brief(event) for event in window_events[:5]],
+                [_format_event_brief(event) for event in window_events],
             )
             break
 
@@ -1272,7 +1297,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
         window_events = [e for e in filesystem_events if e.get("timestamp") and ts <= e["timestamp"] <= window_end]
         count = len(window_events)
         if count >= 5:
-            evidence = [_format_event_brief(usb)] + [_format_event_brief(event) for event in window_events[:4]]
+            evidence = [_format_event_brief(usb)] + [_format_event_brief(event) for event in window_events]
             score += _add_rule_finding(
                 findings,
                 "usb_then_file_activity",
@@ -1289,7 +1314,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             findings,
             "night_activity",
             f"{night_count} events occurred between 22:00 and 06:00.",
-            [_format_event_brief(event) for event in night_events[:5]],
+            [_format_event_brief(event) for event in night_events],
         )
 
     # 4. Cloud service access
@@ -1304,7 +1329,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             findings,
             "cloud_access",
             f"{len(cloud_hits)} browser events matched common cloud storage domains.",
-            [_format_event_brief(event) for event in cloud_hits[:5]],
+            [_format_event_brief(event) for event in cloud_hits],
         )
 
     # 5. Archive file creation
@@ -1319,7 +1344,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             findings,
             "archive_created",
             f"{len(archive_hits)} archive-related filesystem records were identified.",
-            [_format_entry_brief(entry) for entry in archive_hits[:5]],
+            [_format_entry_brief(entry) for entry in archive_hits],
         )
 
     # 6. Large mail attachments
@@ -1337,7 +1362,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             findings,
             "large_mail_attachment",
             f"Mail artifacts included attachments up to {largest[1]:.1f} MB.",
-            [_format_event_brief(item[2]) for item in large_mail[:3]],
+            [_format_event_brief(item[2]) for item in large_mail],
         )
 
     # 7. Suspicious transfer tools
@@ -1352,7 +1377,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             findings,
             "suspicious_tool",
             f"{len(tool_hits)} execution events matched FileZilla or rclone.",
-            [_format_event_brief(event) for event in tool_hits[:5]],
+            [_format_event_brief(event) for event in tool_hits],
         )
 
     # 8. Print then USB
@@ -1368,7 +1393,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
                 findings,
                 "print_then_usb",
                 "A USB event occurred within 30 minutes of a print event.",
-                [_format_event_brief(print_event)] + [_format_event_brief(event) for event in matched_usb[:3]],
+                [_format_event_brief(print_event)] + [_format_event_brief(event) for event in matched_usb],
             )
             break
 
@@ -1391,7 +1416,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
                 findings,
                 "delete_before_usb",
                 f"{len(delete_hits)} delete-like events occurred within 1 hour before USB activity.",
-                [_format_event_brief(event) for event in delete_hits[:5]] + [_format_event_brief(usb)],
+                [_format_event_brief(event) for event in delete_hits] + [_format_event_brief(usb)],
             )
             break
 
@@ -1419,7 +1444,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
                 findings,
                 "repeated_logon_failure",
                 f"{count} failed logon events were recorded within 10 minutes.",
-                evidence[:5],
+                evidence,
             )
             break
 
@@ -1437,7 +1462,7 @@ def evaluate_risk_patterns(artifact_cache: dict, timeline: list[dict]) -> dict:
             [
                 f"{entry.get('friendly_name') or entry.get('product') or entry.get('serial_number')} | "
                 f"first_install={entry.get('first_install_time')}"
-                for entry in first_use_hits[:5]
+                for entry in first_use_hits
             ],
         )
 
@@ -1566,22 +1591,38 @@ class RiskDashboardWidget(QWidget):
             self.detail_text.clear()
             return
         finding = self.finding_list.item(row).data(Qt.UserRole)
-        lines = [
-            f"규칙: {finding.get('name')}",
-            f"심각도: {finding.get('severity')}",
-            f"점수: {finding.get('score')}",
-            f"임계값: {finding.get('threshold')}",
-            "",
-            f"요약: {finding.get('detail')}",
-            "",
-            "증거:",
-        ]
         evidence_lines = finding.get("evidence_lines") or []
-        if evidence_lines:
-            lines.extend(f"- {line}" for line in evidence_lines)
+        summary_html = (
+            f"<div><b>규칙:</b> {html.escape(str(finding.get('name') or ''))}</div>"
+            f"<div><b>심각도:</b> {html.escape(str(finding.get('severity') or ''))}</div>"
+            f"<div><b>점수:</b> {html.escape(str(finding.get('score') or ''))}</div>"
+            f"<div><b>임계값:</b> {html.escape(str(finding.get('threshold') or ''))}</div>"
+            f"<div style='margin-top:6px;'><b>요약:</b> {html.escape(str(finding.get('detail') or ''))}</div>"
+        )
+        if not evidence_lines:
+            evidence_html = "<div style='margin-top:12px;'><b>증거:</b><div>기록된 증거가 없습니다.</div></div>"
         else:
-            lines.append("- 기록된 증거가 없습니다.")
-        self.detail_text.setPlainText("\n".join(lines))
+            rows = []
+            for line in evidence_lines:
+                parts = str(line).split(" | ", 1)
+                when = parts[0] if len(parts) > 1 else "-"
+                target = parts[1] if len(parts) > 1 else parts[0]
+                rows.append(
+                    "<tr>"
+                    f"<td style='padding:6px 8px; border:1px solid #d7dee7; color:#475569; white-space:nowrap;'>{html.escape(when)}</td>"
+                    f"<td style='padding:6px 8px; border:1px solid #d7dee7; color:#0f172a;'>{html.escape(target)}</td>"
+                    "</tr>"
+                )
+            evidence_html = (
+                "<div style='margin-top:12px;'><b>증거:</b></div>"
+                "<table style='width:100%; border-collapse:collapse; margin-top:6px;'>"
+                "<thead><tr>"
+                "<th style='text-align:left; padding:6px 8px; border:1px solid #d7dee7; background:#f1f5f9; color:#334155;'>시간</th>"
+                "<th style='text-align:left; padding:6px 8px; border:1px solid #d7dee7; background:#f1f5f9; color:#334155;'>대상</th>"
+                "</tr></thead>"
+                f"<tbody>{''.join(rows)}</tbody></table>"
+            )
+        self.detail_text.setHtml(f"<div style='font-family:Malgun Gothic; font-size:10pt;'>{summary_html}{evidence_html}</div>")
 
 
 class CaseFileSystemTab(QWidget):
@@ -2349,6 +2390,7 @@ class CaseWindow(QMainWindow):
         self._timeline_file_path = timeline_json_path if os.path.exists(timeline_json_path) else ""
         self.timeline_entries = []
         self.risk_result = risk_data if isinstance(risk_data, dict) else {}
+        self._refresh_legacy_risk_result_if_needed(case_dir)
         self.handler = None
         self.file_system_tab.set_handler(None)
         if self._progress_dialog is not None:
@@ -2412,6 +2454,54 @@ class CaseWindow(QMainWindow):
                     row[key] = self._parse_iso_datetime(row.get(key))
             restored.append(row)
         return restored
+
+    def _refresh_legacy_risk_result_if_needed(self, case_dir: str) -> None:
+        if self._progress_dialog is not None:
+            self._progress_dialog.set_progress(78)
+            self._progress_dialog.set_message("위험도 결과 재계산 중...")
+            QApplication.processEvents()
+
+        timeline_path = self._timeline_file_path or os.path.join(case_dir, "timeline.json")
+        timeline: list[dict] = []
+        if os.path.exists(timeline_path):
+            try:
+                with open(timeline_path, "r", encoding="utf-8") as stream:
+                    loaded = json.load(stream)
+                timeline = self._restore_timeline_datetimes(loaded if isinstance(loaded, list) else [])
+            except Exception as exc:
+                self._log(f"[WARN] timeline 재로딩 실패: {exc}")
+                return
+
+        artifacts_dir = os.path.join(case_dir, "artifacts")
+        artifact_cache: dict = {}
+        for artifact_id in (self.case_config.artifact_ids if self.case_config else []):
+            artifact_path = self._artifact_file_map.get(artifact_id) or os.path.join(artifacts_dir, f"{artifact_id}.json")
+            if not os.path.exists(artifact_path):
+                artifact_cache[artifact_id] = []
+                continue
+            try:
+                with open(artifact_path, "r", encoding="utf-8") as stream:
+                    loaded_entries = json.load(stream)
+                artifact_cache[artifact_id] = loaded_entries if isinstance(loaded_entries, list) else []
+            except Exception:
+                artifact_cache[artifact_id] = []
+
+        try:
+            refreshed = evaluate_risk_patterns(artifact_cache, timeline)
+        except Exception as exc:
+            self._log(f"[WARN] 위험도 재계산 실패: {exc}")
+            return
+
+        self.timeline_entries = timeline
+        self.artifact_cache = artifact_cache
+        self.risk_result = refreshed
+        risk_json_path = os.path.join(case_dir, "risk_result.json")
+        try:
+            with open(risk_json_path, "w", encoding="utf-8") as stream:
+                json.dump(_sanitize_for_json(refreshed), stream, ensure_ascii=False, indent=2)
+            self._log("[INFO] 위험도 결과를 최신 규칙으로 갱신했습니다.")
+        except Exception as exc:
+            self._log(f"[WARN] risk_result.json 저장 실패: {exc}")
 
     def show_case_intake(self) -> None:
         self.intake_page.reset()
@@ -2737,6 +2827,71 @@ class CaseWindow(QMainWindow):
             return "-"
         return str(value)
 
+    @staticmethod
+    def _pick_first(entry: dict, keys: tuple[str, ...], default=""):
+        for key in keys:
+            value = entry.get(key)
+            if value not in (None, ""):
+                return value
+        return default
+
+    def _normalize_artifact_event(self, artifact_id: str, entry: dict) -> tuple[str, str, str, str]:
+        timestamp = self._pick_first(
+            entry,
+            ("timestamp", "last_written_time", "created_time", "modified_time", "accessed_time", "changed_time"),
+            None,
+        )
+        action = self._pick_first(
+            entry,
+            ("action", "event_type", "record_type", "artifact_name"),
+            "-",
+        )
+        target = self._pick_first(
+            entry,
+            (
+                "target",
+                "source_path",
+                "path",
+                "target_path",
+                "entry_name",
+                "file_name",
+                "url",
+                "device_desc",
+                "friendly_name",
+                "serial_number",
+                "registry_key",
+                "document_name",
+            ),
+            "-",
+        )
+        summary = self._pick_first(
+            entry,
+            ("summary", "description", "decoded_data", "detail", "message"),
+            "",
+        )
+
+        # artifact별 최소 보정
+        if artifact_id == "eventlog":
+            eid = entry.get("event_id")
+            if eid not in (None, ""):
+                action = f"event_id_{eid}"
+            if target == "-":
+                target = self._pick_first(entry, ("provider", "channel", "subject_user_name"), "-")
+        elif artifact_id == "usb":
+            if action == "-" or action == "raw_artifact":
+                action = "usb_recorded"
+            if target == "-":
+                target = self._pick_first(entry, ("friendly_name", "product", "serial_number"), "-")
+        elif artifact_id == "filesystem":
+            if action == "-" or action == "filesystem_record":
+                action = "file_recorded"
+            if target == "-":
+                target = self._pick_first(entry, ("source_path", "entry_name"), "-")
+
+        if not summary:
+            summary = f"{action}: {target}"
+        return self._format_event_time(timestamp), str(action), str(target), str(summary)
+
     def _to_detail_lines(self, entry: dict) -> list[tuple[str, str]]:
         common_keys = [
             ("행위", "action"),
@@ -2836,10 +2991,7 @@ class CaseWindow(QMainWindow):
             else:
                 entry_dict = {"summary": str(entry)}
             self.artifact_event_table.insertRow(row)
-            ts = self._format_event_time(entry_dict.get("timestamp"))
-            action = str(entry_dict.get("action") or "-")
-            target = str(entry_dict.get("target") or entry_dict.get("path") or "-")
-            summary = str(entry_dict.get("summary") or entry_dict.get("description") or "-")
+            ts, action, target, summary = self._normalize_artifact_event(artifact_id, entry_dict)
             for col, text in enumerate([ts, action, target, summary]):
                 cell = QTableWidgetItem(text)
                 cell.setData(Qt.UserRole, entry_dict)
