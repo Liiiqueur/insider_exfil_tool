@@ -54,6 +54,7 @@ def parse_to_timeline(entries: list[dict]) -> list[dict]:
         ("install_time", "device_install", "Installed"),
         ("last_arrival_time", "device_connected", "Connected"),
         ("last_removal_time", "device_removed", "Removed"),
+        ("last_written_time", "device_registry_updated", "Registry updated"),
     )
     for entry in entries:
         target = make_target(

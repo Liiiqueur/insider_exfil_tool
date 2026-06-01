@@ -2,6 +2,7 @@ import logging
 import os
 import struct
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from parsers.artifact_weights import attach_artifact_weight
 from parsers.timeline_event import build_timeline_event, sort_timeline
@@ -127,7 +128,7 @@ def parse_to_timeline(entries: list[dict]) -> list[dict]:
 
 
 def _parse_mft_records(info: dict) -> list[dict]:
-    tmp_path = info.get("tmp_path")
+    tmp_path = _resolve_mft_temp_path(info)
     if not tmp_path or not os.path.exists(tmp_path):
         logger.warning("$MFT temp file is missing: %s", tmp_path)
         return []
@@ -182,6 +183,19 @@ def _parse_mft_records(info: dict) -> list[dict]:
     if cache_key:
         _PARSED_MFT_CACHE[cache_key] = list(parsed_entries)
     return parsed_entries
+
+
+def _resolve_mft_temp_path(info: dict) -> "Optional[str]":
+    # collector/worker 버전에 따라 임시 파일 키가 달라질 수 있어 다중 키를 확인한다.
+    for key in ("tmp_path", "temp_path", "_temp_path", "local_path", "_local_path"):
+        value = info.get(key)
+        if isinstance(value, str) and value:
+            return value
+    # source_path가 로컬 절대 경로로 저장된 케이스도 지원
+    source_path = info.get("source_path")
+    if isinstance(source_path, str) and source_path and os.path.exists(source_path):
+        return source_path
+    return None
 
 
 def _parse_record(raw_record: bytes, fallback_inode: int):

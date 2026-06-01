@@ -151,6 +151,7 @@ def _build_usbstor_entry(serial_key, serial: str, type_info: dict, controlset: s
         "manufacturer":    _clean_inf(_safe_value(serial_key, "Mfg",         "") or ""),
         "parent_id_prefix":_safe_value(serial_key, "ParentIdPrefix", ""),
         "hardware_id":     _first_hardware_id(_safe_value(serial_key, "HardwareID", "")),
+        "last_written_time": _safe_key_timestamp(serial_key),
         **{f: None for f in _TIMESTAMP_FIELDS},
         **type_info,
     }
@@ -212,6 +213,7 @@ def _build_enum_usb_entry(serial_key, serial: str, vid_info: dict, controlset: s
         "device_desc":     _clean_inf(_safe_value(serial_key, "DeviceDesc",  "") or ""),
         "friendly_name":   _safe_value(serial_key, "FriendlyName", ""),
         "manufacturer":    _clean_inf(_safe_value(serial_key, "Mfg",         "") or ""),
+        "last_written_time": _safe_key_timestamp(serial_key),
         **{f: None for f in _TIMESTAMP_FIELDS},
         **vid_info,
     }
@@ -254,6 +256,13 @@ def _safe_value(key, name: str, default=None):
         return key.value(name).value()
     except Exception:
         return default
+
+
+def _safe_key_timestamp(key):
+    try:
+        return key.timestamp()
+    except Exception:
+        return None
 
 
 def _read_device_timestamps(serial_key) -> dict:

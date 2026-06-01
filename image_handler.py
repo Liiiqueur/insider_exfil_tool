@@ -189,7 +189,7 @@ class ImageHandler:
         target_path = self._unique_path(
             os.path.join(destination_dir, entry.name)
         )
-        self._extract_file(entry._fs, entry.inode, target_path)
+        self._extract_file(entry._fs, entry.inode, target_path, source_path=entry.path)
         return 1
 
     # ═══════════════════════════════════════
@@ -292,7 +292,7 @@ class ImageHandler:
                 target = self._unique_path(
                     os.path.join(destination_dir, child.name)
                 )
-                self._extract_file(child._fs, child.inode, target)
+                self._extract_file(child._fs, child.inode, target, source_path=child.path)
                 extracted += 1
         return extracted
 
@@ -302,6 +302,7 @@ class ImageHandler:
         inode: int,
         destination_path: str,
         chunk_size: int = 1024 * 1024,
+        source_path: str | None = None,
     ) -> None:
         file_obj = fs.open_meta(inode=inode)
         meta     = getattr(file_obj.info, "meta", None)
@@ -311,6 +312,7 @@ class ImageHandler:
         if parent:
             os.makedirs(parent, exist_ok=True)
 
+        written = 0
         with open(destination_path, "wb") as stream:
             offset = 0
             while offset < size:
@@ -319,6 +321,27 @@ class ImageHandler:
                     break
                 stream.write(chunk)
                 offset += len(chunk)
+                written += len(chunk)
+
+        # 일부 파일은 inode 기반 read_random이 실패하는 경우가 있어 경로 기반으로 재시도
+        if size > 0 and written == 0 and source_path:
+            try:
+                fallback_obj = fs.open(source_path)
+                data = fallback_obj.read_random(0, size)
+                if data:
+                    with open(destination_path, "wb") as stream:
+                        stream.write(data)
+                    written = len(data)
+            except Exception:
+                pass
+
+        # 비정상 추출은 조용히 0바이트 파일을 남기지 않고 명시적으로 실패 처리
+        if size > 0 and written == 0:
+            try:
+                os.remove(destination_path)
+            except Exception:
+                pass
+            raise IOError(f"파일 추출 실패(inode={inode}, size={size}): 데이터 0바이트")
 
     # ═══════════════════════════════════════
     # 내부 — 아티팩트 검색

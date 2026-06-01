@@ -192,6 +192,7 @@ class StartupDialog(QDialog):
 
 
 class TimelineHistogramWidget(QWidget):
+    _MAX_HISTOGRAM_EVENTS = 20000
     bucket_selected = pyqtSignal(int)
     _BAR_STEP = 34
     _BAR_WIDTH = 24
@@ -234,7 +235,11 @@ class TimelineHistogramWidget(QWidget):
         self.setMouseTracking(True)
 
     def set_events(self, events: list[dict]) -> None:
-        self._all_events = list(events)
+        prepared = [e for e in events if isinstance(e, dict) and isinstance(e.get("timestamp"), datetime)]
+        if len(prepared) > self._MAX_HISTOGRAM_EVENTS:
+            step = max(1, len(prepared) // self._MAX_HISTOGRAM_EVENTS)
+            prepared = prepared[::step][:self._MAX_HISTOGRAM_EVENTS]
+        self._all_events = prepared
         self._recompute_range_bounds()
         self.apply_filter(self._filter_text)
 
@@ -381,7 +386,10 @@ class TimelineHistogramWidget(QWidget):
 
         bucket_map: dict[datetime, dict] = {}
         for event in self._events:
-            start = self._bucket_start(event["timestamp"])
+            ts = event.get("timestamp")
+            if not isinstance(ts, datetime):
+                continue
+            start = self._bucket_start(ts)
             end = self._bucket_end(start)
             bucket = bucket_map.setdefault(start, {
                 "start": start,
@@ -779,10 +787,24 @@ class TimelineExplorerWidget(QWidget):
             value_widget.linkActivated.connect(
                 lambda _href, p=path, o=offset: self.detail_navigation_requested.emit(p, o)
             )
+            value_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+            value_widget.customContextMenuRequested.connect(
+                lambda pos, w=value_widget, text=value: self._show_link_context_menu(w, pos, text)
+            )
         else:
             value_widget.setText(value)
         row_layout.addWidget(value_widget, stretch=1)
         self.detail_rows_layout.insertWidget(self.detail_rows_layout.count() - 1, row_widget)
+
+    def _show_link_context_menu(self, widget: QLabel, pos, link_text: str) -> None:
+        menu = QMenu(widget)
+        copy_link_action = menu.addAction("Copy Link")
+        copy_text_action = menu.addAction("Copy")
+        chosen = menu.exec_(widget.mapToGlobal(pos))
+        if chosen == copy_link_action:
+            QApplication.clipboard().setText(link_text)
+        elif chosen == copy_text_action:
+            QApplication.clipboard().setText(widget.text())
 
     def _detail_value_to_text(self, detail: dict, key: str) -> str:
         value = detail.get(key)
